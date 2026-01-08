@@ -472,6 +472,26 @@ Before marking complete:
     :blocked {:action :exit :reason "implementation-blocked"}
     :other {:action :exit :reason "user-provided-other"}}})
 
+(def implement-and-review-commit-step
+  "Custom commit step for implement-and-review that restarts with a new session after commit."
+  {:prompt "Commit and push the changes.
+
+## Pre-Commit Steps
+If working on a beads task, update its status first:
+- Run `bd close <task-id>` to mark the task as complete
+- If partially complete, use `bd update <task-id> --status in-progress` with notes
+
+## Commit and Push
+- Write a clear commit message describing what was implemented
+- If working on a beads task, include the task ID in the commit message
+- Push to the remote repository after committing"
+   :model "haiku"
+   :outcomes #{:committed :nothing-to-commit :other}
+   :on-outcome
+   {:committed {:action :restart-new-session :recipe-id :implement-and-review-all}
+    :nothing-to-commit {:action :exit :reason "no-changes-to-commit"}
+    :other {:action :exit :reason "user-provided-other"}}})
+
 (defn implement-and-review-recipe
   "Returns the implement-and-review recipe definition.
    This recipe implements a task, reviews the code, iteratively fixes issues, and commits."
@@ -481,6 +501,20 @@ Before marking complete:
    :description "Implement task, review code, fix issues, and commit"
    :initial-step :implement
    :steps (assoc review-commit-steps :implement implement-step)
+   :guardrails default-guardrails})
+
+(defn implement-and-review-all-recipe
+  "Returns the implement-and-review-all recipe definition.
+   Like implement-and-review, but after each commit it restarts in a new session
+   to pick up the next task. Continues until no tasks remain."
+  []
+  {:id :implement-and-review-all
+   :label "Implement & Review All"
+   :description "Implement all tasks, restarting in new sessions after each commit"
+   :initial-step :implement
+   :steps (-> review-commit-steps
+              (assoc :implement implement-step)
+              (assoc :commit implement-and-review-commit-step))
    :guardrails default-guardrails})
 
 (defn rebase-recipe
@@ -589,6 +623,7 @@ The branch is now rebased on main and ready for further work or pushing."
    :break-down-tasks (break-down-tasks-recipe)
    :review-and-commit (review-and-commit-recipe)
    :implement-and-review (implement-and-review-recipe)
+   :implement-and-review-all (implement-and-review-all-recipe)
    :rebase (rebase-recipe)})
 
 (defn get-recipe

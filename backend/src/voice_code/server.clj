@@ -638,7 +638,11 @@
                              {:type :recipe-exited
                               :session-id session-id
                               :reason (:reason next-action)})
-            next-action)))
+            next-action)
+
+          :restart-new-session
+          ;; Pass through to execute-recipe-step which handles the restart
+          next-action))
       ;; Failed to parse outcome - check if we should retry or exit
       (let [retry-count (get-in orch-state [:step-retry-counts current-step] 0)
             error-msg (:error outcome-result)]
@@ -799,6 +803,58 @@
                           (send-to-client! channel
                                            {:type :turn-complete
                                             :session-id session-id}))
+
+                        :restart-new-session
+                        ;; Recipe finished, start new recipe in fresh session
+                        ;; Used by implement-and-review to loop after commit
+                        (let [new-session-id (str (java.util.UUID/randomUUID))
+                              new-recipe-id (:recipe-id result)]
+                          (log/info "Recipe restarting with new session"
+                                    {:old-session-id session-id
+                                     :new-session-id new-session-id
+                                     :recipe-id new-recipe-id
+                                     :working-directory working-dir})
+                          ;; Exit current recipe and release lock
+                          (exit-recipe-for-session session-id "restart-new-session")
+                          (repl/release-session-lock! session-id)
+                          (send-to-client! channel
+                                           {:type :recipe-exited
+                                            :session-id session-id
+                                            :reason "restart-new-session"})
+                          (send-to-client! channel
+                                           {:type :turn-complete
+                                            :session-id session-id})
+                          ;; Start new recipe with fresh session
+                          (if-let [new-orch-state (start-recipe-for-session new-session-id new-recipe-id true)]
+                            (let [new-recipe (recipes/get-recipe new-recipe-id)]
+                              (send-to-client! channel
+                                               {:type :recipe-started
+                                                :recipe-id new-recipe-id
+                                                :recipe-label (:label new-recipe)
+                                                :session-id new-session-id
+                                                :current-step (:current-step new-orch-state)
+                                                :step-count (:step-count new-orch-state)})
+                              ;; Acquire lock and start new recipe
+                              (if (repl/acquire-session-lock! new-session-id)
+                                (do
+                                  (send-to-client! channel
+                                                   {:type :ack
+                                                    :message "Starting recipe in new session..."})
+                                  (execute-recipe-step channel new-session-id working-dir
+                                                       new-orch-state new-recipe))
+                                (do
+                                  (log/error "Failed to acquire lock for new session"
+                                             {:session-id new-session-id})
+                                  (exit-recipe-for-session new-session-id "lock-failed")
+                                  (send-to-client! channel
+                                                   {:type :error
+                                                    :message "Failed to start new session"}))))
+                            (do
+                              (log/error "Failed to create orchestration state for restart"
+                                         {:recipe-id new-recipe-id})
+                              (send-to-client! channel
+                                               {:type :error
+                                                :message (str "Recipe not found: " (name new-recipe-id))}))))
 
                         ;; Default - unexpected action, release lock and exit
                         (do

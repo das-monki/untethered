@@ -176,7 +176,8 @@
 (defn determine-next-action
   "Determine next action based on outcome.
    Returns {:action :next-step :step-name new-step}
-         or {:action :exit :reason reason-str}"
+         or {:action :exit :reason reason-str}
+         or {:action :restart-new-session :recipe-id recipe-id}"
   [step outcome]
   (let [transition (get-next-transition step outcome)]
     (cond
@@ -187,7 +188,8 @@
       {:action :next-step :step-name (:next-step transition)}
 
       (:action transition)
-      {:action (:action transition) :reason (:reason transition)}
+      ;; Pass through all transition fields (action, reason, recipe-id, etc.)
+      (merge {:action (:action transition)} (dissoc transition :action))
 
       :else
       {:action :exit :reason "Invalid transition"})))

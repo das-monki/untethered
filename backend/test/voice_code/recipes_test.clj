@@ -307,6 +307,47 @@
       (is (re-find #"no-tasks" prompt)))))
 
 ;; ============================================================================
+;; Implement & Review All Recipe Tests
+;; ============================================================================
+
+(deftest implement-and-review-all-recipe-test
+  (testing "recipe exists and has correct metadata"
+    (let [recipe (recipes/get-recipe :implement-and-review-all)]
+      (is (not (nil? recipe)))
+      (is (= :implement-and-review-all (:id recipe)))
+      (is (= "Implement & Review All" (:label recipe)))))
+
+  (testing "committed outcome restarts with new session"
+    (let [recipe (recipes/get-recipe :implement-and-review-all)
+          transition (get-in recipe [:steps :commit :on-outcome :committed])]
+      (is (= :restart-new-session (:action transition)))
+      (is (= :implement-and-review-all (:recipe-id transition)))))
+
+  (testing "nothing-to-commit outcome exits"
+    (let [recipe (recipes/get-recipe :implement-and-review-all)
+          transition (get-in recipe [:steps :commit :on-outcome :nothing-to-commit])]
+      (is (= :exit (:action transition)))
+      (is (= "no-changes-to-commit" (:reason transition)))))
+
+  (testing "shares implement step with implement-and-review"
+    (let [all-recipe (recipes/get-recipe :implement-and-review-all)
+          single-recipe (recipes/get-recipe :implement-and-review)]
+      (is (= (get-in all-recipe [:steps :implement])
+             (get-in single-recipe [:steps :implement])))))
+
+  (testing "shares code-review and fix steps with implement-and-review"
+    (let [all-recipe (recipes/get-recipe :implement-and-review-all)
+          single-recipe (recipes/get-recipe :implement-and-review)]
+      (is (= (get-in all-recipe [:steps :code-review])
+             (get-in single-recipe [:steps :code-review])))
+      (is (= (get-in all-recipe [:steps :fix])
+             (get-in single-recipe [:steps :fix])))))
+
+  (testing "recipe validates successfully"
+    (let [recipe (recipes/get-recipe :implement-and-review-all)]
+      (is (nil? (recipes/validate-recipe recipe))))))
+
+;; ============================================================================
 ;; Rebase Recipe Tests
 ;; ============================================================================
 
