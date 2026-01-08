@@ -29,7 +29,7 @@ enum KeychainError: Error, Equatable {
 class KeychainManager {
     static let shared = KeychainManager()
 
-    private let service = "dev.910labs.untethered"
+    private let service = "dev.910labs.voice-code"
     private let account = "api-key"
 
     /// Access group for sharing keychain items with app extensions.

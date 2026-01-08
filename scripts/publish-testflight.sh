@@ -116,23 +116,48 @@ create_archive() {
     # xcodebuild to skip the destination validation that incorrectly fails
     export DVTDisableValidateGenericDeviceDestinations=1
 
-    xcodebuild archive \
-        -project "$PROJECT_PATH" \
-        -scheme "$SCHEME" \
-        -archivePath "$ARCHIVE_PATH" \
-        -configuration Release \
-        -destination 'generic/platform=iOS' \
-        -allowProvisioningUpdates \
-        CODE_SIGN_STYLE=Automatic \
-        DEVELOPMENT_TEAM="$TEAM_ID" \
+    # Build xcodebuild command with optional ASC authentication
+    XCODE_ARGS=(
+        archive
+        -project "$PROJECT_PATH"
+        -scheme "$SCHEME"
+        -archivePath "$ARCHIVE_PATH"
+        -configuration Release
+        -destination 'generic/platform=iOS'
+        -allowProvisioningUpdates
+        CODE_SIGN_STYLE=Automatic
+        DEVELOPMENT_TEAM="$TEAM_ID"
+    )
+
+    # Add ASC authentication if credentials are available (enables automatic provisioning)
+    if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -f "$ASC_KEY_PATH" ]; then
+        log_info "Using App Store Connect API for provisioning..."
+        XCODE_ARGS+=(
+            -authenticationKeyPath "$ASC_KEY_PATH"
+            -authenticationKeyID "$ASC_KEY_ID"
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+        )
+    fi
+
+    xcodebuild "${XCODE_ARGS[@]}" \
         | grep -E "^\*\*|error:|warning:|note:|Archive succeeded"
 
     if [ ! -d "$ARCHIVE_PATH" ]; then
         log_error "Archive creation failed - archive not found at $ARCHIVE_PATH"
         echo ""
-        log_error "🔧 If you see 'iOS 26.1 is not installed' error with Xcode 26.x beta:"
-        log_info "Run: make fix-xcode-platform"
-        log_info "Or see: docs/xcode-26-beta-fix.md"
+        log_error "🔧 Common issues:"
+        echo ""
+        log_info "1. Missing provisioning profiles:"
+        log_info "   Open Xcode → Preferences → Accounts → Sign in with Apple ID"
+        log_info "   Then: Download Manual Profiles or let Xcode manage automatically"
+        echo ""
+        log_info "2. 'iOS 26.1 is not installed' error with Xcode 26.x beta:"
+        log_info "   Run: make fix-xcode-platform"
+        log_info "   Or see: docs/xcode-26-beta-fix.md"
+        echo ""
+        log_info "3. ASC API auth failed:"
+        log_info "   Verify ASC_KEY_ID, ASC_ISSUER_ID, and ASC_KEY_PATH are set correctly"
+        log_info "   Ensure the API key has Admin or Developer role in App Store Connect"
         exit 1
     fi
 

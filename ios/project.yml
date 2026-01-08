@@ -14,7 +14,7 @@ settings:
     DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: 111
+    CURRENT_PROJECT_VERSION: 117
     IPHONEOS_DEPLOYMENT_TARGET: "18.5"
   configs:
     Debug:
@@ -68,10 +68,10 @@ targets:
         com.apple.security.application-groups:
           - group.com.910labs.untethered.resources
         keychain-access-groups:
-          - $(AppIdentifierPrefix)dev.910labs.untethered
+          - $(AppIdentifierPrefix)dev.910labs.voice-code
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untethered
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: VoiceCode/Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
@@ -119,10 +119,10 @@ targets:
         com.apple.security.application-groups:
           - group.com.910labs.untethered.resources
         keychain-access-groups:
-          - $(AppIdentifierPrefix)dev.910labs.untethered
+          - $(AppIdentifierPrefix)dev.910labs.voice-code
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untethered.ShareExtension
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code.ShareExtension
         INFOPLIST_FILE: VoiceCodeShareExtension/Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
 
@@ -160,7 +160,7 @@ targets:
         com.apple.security.files.user-selected.read-write: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untethered-mac
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-mac
         PRODUCT_MODULE_NAME: VoiceCode
         INFOPLIST_FILE: VoiceCodeMac/Info.plist
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
@@ -178,7 +178,7 @@ targets:
       - target: VoiceCode
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untetheredTests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-codeTests
         GENERATE_INFOPLIST_FILE: YES
 
   VoiceCodeUITests:
@@ -191,7 +191,7 @@ targets:
       - target: VoiceCode
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untetheredUITests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-codeUITests
         GENERATE_INFOPLIST_FILE: YES
 
   VoiceCodeMacTests:
@@ -212,7 +212,7 @@ targets:
       - target: VoiceCodeMac
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untethered-macTests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-macTests
         GENERATE_INFOPLIST_FILE: YES
 
   VoiceCodeMacUITests:
@@ -225,7 +225,7 @@ targets:
       - target: VoiceCodeMac
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.untethered-macUITests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.910labs.voice-code-macUITests
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:
