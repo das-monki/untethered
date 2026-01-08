@@ -73,7 +73,8 @@ struct APIKeyManagementView: View {
             ToolbarBuilder.doneButton { dismiss() }
         }
         #if os(iOS)
-        .sheet(isPresented: $showingScanner) {
+        // Use fullScreenCover instead of sheet to avoid nested sheet issues
+        .fullScreenCover(isPresented: $showingScanner) {
             QRScannerView(
                 onCodeScanned: { scannedKey in
                     newKeyInput = scannedKey

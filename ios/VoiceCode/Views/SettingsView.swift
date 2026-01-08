@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var localSystemPrompt: String = ""
     @State private var pendingAPIKeyInput: String = ""
     @State private var showingAPIKeyError = false
+    @State private var showingQRScanner = false
 
     let onServerChange: (String) -> Void
     let onMaxMessageSizeChange: ((Int) -> Void)?
@@ -29,7 +30,7 @@ struct SettingsView: View {
 
     private var settingsForm: some View {
         Form {
-            APIKeySection(onKeyChanged: onAPIKeyChanged, apiKeyInput: $pendingAPIKeyInput)
+            APIKeySection(onKeyChanged: onAPIKeyChanged, apiKeyInput: $pendingAPIKeyInput, showingScanner: $showingQRScanner)
 
             Section(header: Text("Server Configuration")) {
                 TextField("Server Address", text: $settings.serverURL)
@@ -240,6 +241,22 @@ struct SettingsView: View {
         } message: {
             Text("API key must start with 'voice-code-' and be 43 characters.")
         }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $showingQRScanner) {
+            QRScannerView(
+                onCodeScanned: { scannedKey in
+                    LogManager.shared.log("SettingsView: onCodeScanned callback, key length: \(scannedKey.count)", category: "QRScanner")
+                    pendingAPIKeyInput = scannedKey
+                    showingQRScanner = false
+                },
+                onCancel: {
+                    LogManager.shared.log("SettingsView: onCancel callback", category: "QRScanner")
+                    showingQRScanner = false
+                }
+            )
+            .ignoresSafeArea()
+        }
+        #endif
         .swipeToBack()
     }
 

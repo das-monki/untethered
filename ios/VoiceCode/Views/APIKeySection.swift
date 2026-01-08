@@ -5,7 +5,6 @@ import SwiftUI
 
 /// Settings section showing API key status and providing key management actions.
 struct APIKeySection: View {
-    @State private var showingScanner = false
     @State private var showingDeleteConfirmation = false
     @State private var validationError: String?
     /// Tracks whether a key exists - used to trigger view refresh after save/delete
@@ -17,6 +16,9 @@ struct APIKeySection: View {
     /// Binding for API key input - allows parent to access pending input for save
     @Binding var apiKeyInput: String
 
+    /// Binding for showing scanner - managed by parent SettingsView for stability
+    @Binding var showingScanner: Bool
+
     var body: some View {
         Section(header: Text("Authentication")) {
             if hasKey {
@@ -25,22 +27,8 @@ struct APIKeySection: View {
                 notConfiguredKeyView
             }
         }
-        #if os(iOS)
-        .sheet(isPresented: $showingScanner) {
-            QRScannerView(
-                onCodeScanned: { scannedKey in
-                    // Populate the field; key will be saved when user clicks Save
-                    // This ensures the server URL is also updated before reconnecting
-                    apiKeyInput = scannedKey
-                    showingScanner = false
-                },
-                onCancel: {
-                    showingScanner = false
-                }
-            )
-            .ignoresSafeArea()
-        }
-        #endif
+        // Note: QR scanner presentation is now handled by parent SettingsView
+        // to avoid SwiftUI view identity issues that caused rapid view recreation
         .alert("Delete API Key?", isPresented: $showingDeleteConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) {
@@ -70,7 +58,10 @@ struct APIKeySection: View {
 
             #if os(iOS)
             // Update key button (iOS only - requires camera for QR scanning)
-            Button(action: { showingScanner = true }) {
+            Button(action: {
+                LogManager.shared.log("APIKeySection: Update Key button tapped, setting showingScanner=true", category: "QRScanner")
+                showingScanner = true
+            }) {
                 HStack {
                     Text("Update Key")
                     Spacer()
@@ -113,7 +104,10 @@ struct APIKeySection: View {
 
             #if os(iOS)
             // Scan QR button (iOS only - requires camera)
-            Button(action: { showingScanner = true }) {
+            Button(action: {
+                LogManager.shared.log("APIKeySection: Scan QR Code button tapped, setting showingScanner=true", category: "QRScanner")
+                showingScanner = true
+            }) {
                 HStack {
                     Text("Scan QR Code")
                     Spacer()
@@ -207,7 +201,7 @@ struct APIKeySection: View {
 struct APIKeySection_Previews: PreviewProvider {
     static var previews: some View {
         Form {
-            APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""))
+            APIKeySection(onKeyChanged: nil, apiKeyInput: .constant(""), showingScanner: .constant(false))
         }
     }
 }

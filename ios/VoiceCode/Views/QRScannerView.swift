@@ -10,15 +10,19 @@ struct QRScannerView: UIViewControllerRepresentable {
     let onCancel: () -> Void
 
     func makeUIViewController(context: Context) -> QRScannerViewController {
+        LogManager.shared.log("QRScannerView: makeUIViewController called", category: "QRScanner")
         let controller = QRScannerViewController()
         controller.delegate = context.coordinator
         return controller
     }
 
-    func updateUIViewController(_ uiViewController: QRScannerViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: QRScannerViewController, context: Context) {
+        LogManager.shared.log("QRScannerView: updateUIViewController called", category: "QRScanner")
+    }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onCodeScanned: onCodeScanned, onCancel: onCancel)
+        LogManager.shared.log("QRScannerView: makeCoordinator called", category: "QRScanner")
+        return Coordinator(onCodeScanned: onCodeScanned, onCancel: onCancel)
     }
 
     class Coordinator: NSObject, QRScannerViewControllerDelegate {
@@ -31,10 +35,12 @@ struct QRScannerView: UIViewControllerRepresentable {
         }
 
         func qrScannerDidScanCode(_ code: String) {
+            LogManager.shared.log("Coordinator: qrScannerDidScanCode called with code length: \(code.count)", category: "QRScanner")
             onCodeScanned(code)
         }
 
         func qrScannerDidCancel() {
+            LogManager.shared.log("Coordinator: qrScannerDidCancel called", category: "QRScanner")
             onCancel()
         }
     }
@@ -62,6 +68,7 @@ class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsD
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        LogManager.shared.log("QRScannerViewController: viewDidLoad", category: "QRScanner")
         view.backgroundColor = .black
         setupUI()
         checkCameraPermission()
@@ -69,23 +76,37 @@ class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsD
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        LogManager.shared.log("QRScannerViewController: viewWillAppear", category: "QRScanner")
         hasScanned = false
 
         if let session = captureSession, !session.isRunning {
+            LogManager.shared.log("QRScannerViewController: starting capture session", category: "QRScanner")
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 self?.captureSession?.startRunning()
             }
         }
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        LogManager.shared.log("QRScannerViewController: viewDidAppear", category: "QRScanner")
+    }
+
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        LogManager.shared.log("QRScannerViewController: viewWillDisappear", category: "QRScanner")
 
         if let session = captureSession, session.isRunning {
+            LogManager.shared.log("QRScannerViewController: stopping capture session", category: "QRScanner")
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 self?.captureSession?.stopRunning()
             }
         }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        LogManager.shared.log("QRScannerViewController: viewDidDisappear", category: "QRScanner")
     }
 
     override func viewDidLayoutSubviews() {
@@ -166,17 +187,26 @@ class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsD
     // MARK: - Camera Permission
 
     private func checkCameraPermission() {
+        LogManager.shared.log("QRScannerViewController: checkCameraPermission called", category: "QRScanner")
+
         // Skip permission prompts during UI tests to prevent blocking automation
         if TestingEnvironment.isUITesting {
+            LogManager.shared.log("QRScannerViewController: UI testing mode - showing permission denied", category: "QRScanner")
             showPermissionDenied()
             return
         }
 
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        LogManager.shared.log("QRScannerViewController: camera authorization status = \(status.rawValue)", category: "QRScanner")
+
+        switch status {
         case .authorized:
+            LogManager.shared.log("QRScannerViewController: camera authorized, setting up camera", category: "QRScanner")
             setupCamera()
         case .notDetermined:
+            LogManager.shared.log("QRScannerViewController: camera not determined, requesting access", category: "QRScanner")
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                LogManager.shared.log("QRScannerViewController: camera access response: granted=\(granted)", category: "QRScanner")
                 DispatchQueue.main.async {
                     if granted {
                         self?.setupCamera()
@@ -186,8 +216,10 @@ class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsD
                 }
             }
         case .denied, .restricted:
+            LogManager.shared.log("QRScannerViewController: camera denied/restricted", category: "QRScanner")
             showPermissionDenied()
         @unknown default:
+            LogManager.shared.log("QRScannerViewController: camera unknown status", category: "QRScanner")
             showPermissionDenied()
         }
     }
@@ -241,28 +273,36 @@ class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsD
     // MARK: - Camera Setup
 
     private func setupCamera() {
+        LogManager.shared.log("QRScannerViewController: setupCamera started", category: "QRScanner")
         let session = AVCaptureSession()
 
         guard let videoCaptureDevice = AVCaptureDevice.default(for: .video) else {
+            LogManager.shared.log("QRScannerViewController: ERROR - No camera available", category: "QRScanner")
             showCameraError("No camera available")
             return
         }
+        LogManager.shared.log("QRScannerViewController: got video capture device", category: "QRScanner")
 
         guard let videoInput = try? AVCaptureDeviceInput(device: videoCaptureDevice) else {
+            LogManager.shared.log("QRScannerViewController: ERROR - Could not create video input", category: "QRScanner")
             showCameraError("Could not create video input")
             return
         }
+        LogManager.shared.log("QRScannerViewController: created video input", category: "QRScanner")
 
         guard session.canAddInput(videoInput) else {
+            LogManager.shared.log("QRScannerViewController: ERROR - Could not add video input", category: "QRScanner")
             showCameraError("Could not add video input")
             return
         }
 
         session.addInput(videoInput)
+        LogManager.shared.log("QRScannerViewController: added video input to session", category: "QRScanner")
 
         let metadataOutput = AVCaptureMetadataOutput()
 
         guard session.canAddOutput(metadataOutput) else {
+            LogManager.shared.log("QRScannerViewController: ERROR - Could not add metadata output", category: "QRScanner")
             showCameraError("Could not add metadata output")
             return
         }
@@ -270,6 +310,7 @@ class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsD
         session.addOutput(metadataOutput)
         metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
         metadataOutput.metadataObjectTypes = [.qr]
+        LogManager.shared.log("QRScannerViewController: configured metadata output for QR", category: "QRScanner")
 
         let previewLayer = AVCaptureVideoPreviewLayer(session: session)
         previewLayer.frame = view.layer.bounds
@@ -278,9 +319,12 @@ class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsD
 
         self.captureSession = session
         self.previewLayer = previewLayer
+        LogManager.shared.log("QRScannerViewController: preview layer configured", category: "QRScanner")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            LogManager.shared.log("QRScannerViewController: starting session.startRunning()", category: "QRScanner")
             session.startRunning()
+            LogManager.shared.log("QRScannerViewController: session.startRunning() completed", category: "QRScanner")
             // Set detection rect to scanner frame area
             DispatchQueue.main.async {
                 self?.updateMetadataOutputRect(metadataOutput)
