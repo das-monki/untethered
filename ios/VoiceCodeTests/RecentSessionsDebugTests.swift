@@ -29,17 +29,17 @@ final class RecentSessionsDebugTests: XCTestCase {
         // Backend now sends JSON with 'name' field
         let backendJSON: [String: Any] = [
             "session_id": "82cbb54e-f076-453a-8777-7111a3f49eb4",
-            "name": "hunt910-stand-filter",
+            "name": "my-project-filter",
             "last_modified": "2025-10-23T13:29:31.809Z",
-            "working_directory": "/Users/travisbrown/code/mono/hunt910-stand-filter"
+            "working_directory": "/tmp/test-project"
         ]
 
         let sessions = RecentSession.parseRecentSessions([backendJSON])
 
         XCTAssertEqual(sessions.count, 1, "Should parse backend JSON with name field")
         XCTAssertEqual(sessions.first?.sessionId, "82cbb54e-f076-453a-8777-7111a3f49eb4")
-        XCTAssertEqual(sessions.first?.workingDirectory, "/Users/travisbrown/code/mono/hunt910-stand-filter")
-        XCTAssertEqual(sessions.first?.name, "hunt910-stand-filter")
+        XCTAssertEqual(sessions.first?.workingDirectory, "/tmp/test-project")
+        XCTAssertEqual(sessions.first?.name, "my-project-filter")
     }
 
     func testDisplayNameWithCoreDataSession() {
@@ -48,7 +48,7 @@ final class RecentSessionsDebugTests: XCTestCase {
         let cdSession = CDBackendSession(context: viewContext)
         cdSession.id = sessionId
         cdSession.backendName = sessionId.uuidString.lowercased()
-        cdSession.workingDirectory = "/Users/travisbrown/code/mono/hunt910-stand-filter"
+        cdSession.workingDirectory = "/tmp/test-project"
         cdSession.lastModified = Date()
         cdSession.messageCount = Int32(0)
         cdSession.preview = ""
@@ -67,7 +67,7 @@ final class RecentSessionsDebugTests: XCTestCase {
         let backendJSON: [String: Any] = [
             "session_id": "82cbb54e-f076-453a-8777-7111a3f49eb4",
             "name": "Backend Claude Summary",  // Backend sends Claude summary
-            "working_directory": "/Users/travisbrown/code/mono/hunt910-stand-filter",
+            "working_directory": "/tmp/test-project",
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
 
@@ -84,7 +84,7 @@ final class RecentSessionsDebugTests: XCTestCase {
         let backendJSON: [String: Any] = [
             "session_id": "99999999-9999-9999-9999-999999999999",
             "name": "Code Review: My Project Architecture",
-            "working_directory": "/Users/travisbrown/code/mono/my-project",
+            "working_directory": "/tmp/my-project",
             "last_modified": "2025-10-23T13:29:31.809Z"
         ]
 

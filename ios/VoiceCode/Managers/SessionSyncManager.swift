@@ -59,17 +59,6 @@ class SessionSyncManager {
                         try backgroundContext.save()
                         logger.info("✅ Saved \(sessions.count) sessions to CoreData")
 
-                        // Log what's actually in CoreData after save
-                        let fetchRequest = CDBackendSession.fetchAllBackendSessions()
-                        if let allSessions = try? backgroundContext.fetch(fetchRequest) {
-                            logger.info("💾 CoreData now contains \(allSessions.count) total active sessions")
-                            let hunt910Sessions = allSessions.filter { $0.workingDirectory.contains("hunt910") }
-                            logger.info("🎯 hunt910 sessions in CoreData: \(hunt910Sessions.count)")
-                            for session in hunt910Sessions.sorted(by: { $0.lastModified > $1.lastModified }).prefix(10) {
-                                logger.info("  - \(session.id.uuidString.lowercased()) | \(session.messageCount) msgs")
-                            }
-                        }
-
                         // Notify observers that session list was updated
                         DispatchQueue.main.async {
                             NotificationCenter.default.post(name: .sessionListDidUpdate, object: nil)

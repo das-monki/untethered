@@ -119,10 +119,10 @@
             current-path)
 
           ;; Try progressively longer combinations of parts
-          ;; For ["hunt910" "share" "location"], try:
-          ;; - "hunt910-share-location" (3 parts)
-          ;; - "hunt910-share" (2 parts)  
-          ;; - "hunt910" (1 part)
+          ;; For ["my-app" "feature" "branch"], try:
+          ;; - "my-app-feature-branch" (3 parts)
+          ;; - "my-app-feature" (2 parts)
+          ;; - "my-app" (1 part)
           (let [num-remaining (count remaining)
                 ;; Generate all possible combinations from longest to shortest
                 combinations (for [len (range num-remaining 0 -1)]
