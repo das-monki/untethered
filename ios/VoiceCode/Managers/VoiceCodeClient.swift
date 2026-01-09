@@ -32,6 +32,8 @@ class VoiceCodeClient: ObservableObject {
 
     private var webSocket: URLSessionWebSocketTask?
     private var reconnectionTimer: DispatchSourceTimer?
+    private var pingTimer: DispatchSourceTimer?  // Keepalive ping timer
+    private let pingInterval: TimeInterval = 30.0  // Send ping every 30 seconds
     private var serverURL: String
     private var reconnectionAttempts = 0
     private var maxReconnectionDelay: TimeInterval = 30.0 // Max 30 seconds (per design spec)
@@ -324,6 +326,9 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func disconnect() {
+        // Stop keepalive ping timer
+        stopPingTimer()
+
         reconnectionTimer?.cancel()
         reconnectionTimer = nil
 
@@ -427,6 +432,39 @@ class VoiceCodeClient: ObservableObject {
         reconnectionTimer = timer
     }
 
+    // MARK: - Ping Keepalive
+
+    /// Start the ping timer to keep the WebSocket connection alive
+    /// Called after successful authentication (when "connected" is received)
+    private func startPingTimer() {
+        // Cancel any existing timer
+        pingTimer?.cancel()
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        timer.schedule(deadline: .now() + pingInterval, repeating: pingInterval)
+        timer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+
+            // Only send ping if connected and authenticated
+            if self.isConnected && self.isAuthenticated {
+                logger.debug("🏓 [VoiceCodeClient] Sending keepalive ping")
+                self.ping()
+            }
+        }
+        timer.resume()
+
+        pingTimer = timer
+        logger.info("🏓 [VoiceCodeClient] Ping timer started (interval: \(self.pingInterval)s)")
+    }
+
+    /// Stop the ping timer
+    /// Called on disconnect or connection failure
+    private func stopPingTimer() {
+        pingTimer?.cancel()
+        pingTimer = nil
+        logger.debug("🏓 [VoiceCodeClient] Ping timer stopped")
+    }
+
     // MARK: - Message Handling
 
     private func receiveMessage() {
@@ -449,10 +487,17 @@ class VoiceCodeClient: ObservableObject {
                 self.receiveMessage()
 
             case .failure(let error):
+                // Log the error details for debugging
+                logger.error("❌ [VoiceCodeClient] WebSocket receive failed: \(error.localizedDescription)")
+                LogManager.shared.log("WebSocket receive failed: \(error.localizedDescription)", category: "VoiceCodeClient")
+
                 // Clear WebSocket reference inside main queue to ensure thread safety
                 // Both connect() and this failure handler must access webSocket on main thread
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
+
+                    // Stop keepalive ping timer
+                    self.stopPingTimer()
 
                     // Clear WebSocket reference to enable reconnection
                     self.webSocket?.cancel(with: .goingAway, reason: nil)
@@ -470,9 +515,21 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func handleMessage(_ text: String) {  // internal for testing
-        guard let data = text.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = json["type"] as? String else {
+        guard let data = text.data(using: .utf8) else {
+            logger.error("❌ [VoiceCodeClient] Failed to convert message to UTF-8 data")
+            LogManager.shared.log("Failed to convert message to UTF-8 data: \(text.prefix(200))", category: "VoiceCodeClient")
+            return
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            logger.error("❌ [VoiceCodeClient] Failed to parse JSON from message")
+            LogManager.shared.log("Failed to parse JSON: \(text.prefix(200))", category: "VoiceCodeClient")
+            return
+        }
+
+        guard let type = json["type"] as? String else {
+            logger.error("❌ [VoiceCodeClient] Message missing 'type' field: \(json.keys)")
+            LogManager.shared.log("Message missing 'type' field: \(json.keys)", category: "VoiceCodeClient")
             return
         }
 
@@ -535,6 +592,9 @@ class VoiceCodeClient: ObservableObject {
                         self.sendMessage(message)
                     }
                 }
+
+                // Start ping keepalive timer after successful authentication
+                self.startPingTimer()
 
             case "replay":
                 // Replayed message from undelivered queue
