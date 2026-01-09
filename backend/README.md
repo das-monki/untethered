@@ -8,6 +8,23 @@ Clojure WebSocket server that bridges iOS voice input to Claude Code CLI.
 - [Clojure CLI](https://clojure.org/guides/install_clojure)
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
 
+### Claude CLI Installation
+
+The backend looks for Claude CLI at `~/.claude/local/claude`. You can override this with the `CLAUDE_CLI_PATH` environment variable:
+
+```bash
+export CLAUDE_CLI_PATH=/path/to/claude
+```
+
+**Recommended:** Install via npm for best performance:
+
+```bash
+npm install -g @anthropic-ai/claude-code
+export CLAUDE_CLI_PATH=$(which claude)
+```
+
+The Homebrew version (`brew install claude`) has noticeable startup delays compared to the npm version.
+
 ## Quick Start
 
 ```bash
@@ -26,11 +43,13 @@ Edit `resources/config.edn`:
 
 ```edn
 {:server {:port 8080
-          :host "0.0.0.0"}
- :claude {:cli-path "claude"
-          :default-timeout 86400000}
+          :host "127.0.0.1"}  ; Use "0.0.0.0" to bind to all interfaces
+ :claude {:default-timeout 86400000
+          :default-working-directory "~/code"}
  :logging {:level :info}}
 ```
+
+Note: Claude CLI path is configured via `CLAUDE_CLI_PATH` environment variable, not in this file.
 
 ## Development
 
