@@ -16,7 +16,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 0/4 | - | - |
 | Network Transition Handling | 1/3 | 1 | 1 |
-| Server-Side Resilience | 2/3 | 4 | 4 |
+| Server-Side Resilience | 3/3 | 8 | 9 |
 | Observability | 0/3 | - | - |
 | Edge Cases | 0/3 | - | - |
 
@@ -1437,7 +1437,195 @@ If multi-server deployment were needed in the future:
 3. Add session routing layer (external load balancer or application-level)
 4. Consider centralized session state (Redis for session metadata, shared filesystem for .jsonl files)
 
-<!-- Add findings for item 34 here -->
+#### 34. Implement circuit breaker pattern
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:38-40` - `reconnectionAttempts`, `maxReconnectionDelay`, `maxReconnectionAttempts` properties
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:389-433` - `setupReconnection()` with max attempts check
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:411-421` - Max attempts reached: shows error and stops retrying
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:351-356` - `forceReconnect()` resets attempts and reconnects
+- `ios/VoiceCode/Views/ConversationView.swift:285-296` - Error display when connection fails
+
+**Findings**:
+The implementation has **partial circuit breaker behavior** with max retry limits, but lacks the key circuit breaker concept of "open/half-open/closed" states and automatic recovery attempts.
+
+**What's implemented:**
+
+1. **Maximum retry attempts** ✅
+   - `maxReconnectionAttempts = 20` (approximately 17 minutes of retry time)
+   - After 20 consecutive failures, reconnection stops permanently
+   - User sees error: "Unable to connect to server after 20 attempts. Please check your server settings."
+
+2. **Battery drain prevention** ✅ (partial)
+   - Exponential backoff with jitter spreads out retries (1s → 2s → 4s → ... → 30s)
+   - Maximum delay capped at 30 seconds
+   - After max attempts, timer is cancelled completely (no more retries)
+   - However: retries continue for full 17 minutes even if server is clearly down
+
+3. **User-visible error state** ✅
+   - `currentError` is displayed in red text at bottom of ConversationView
+   - Error text is tappable to copy to clipboard
+   - Shows specific message about max attempts reached
+
+4. **Manual retry available** ✅
+   - `forceReconnect()` method resets `reconnectionAttempts = 0` and immediately reconnects
+   - User can tap connection status indicator to trigger manual reconnect
+   - This is the "close circuit" mechanism - requires user action
+
+**What's NOT implemented:**
+
+1. **No automatic circuit reset** ❌
+   - Classic circuit breaker pattern has "half-open" state where circuit automatically tries one probe request after cooldown
+   - Current implementation: once max attempts reached, circuit stays "open" forever until user manually forces reconnect
+   - Server could recover after 18 minutes, but client won't know unless user taps reconnect
+
+2. **No early circuit open** ❌
+   - Circuit opens only after 20 consecutive failures (~17 minutes)
+   - Best practice suggests opening circuit after N failures (e.g., 3-5) within a time window
+   - Current behavior: 20 minutes of failed retries before showing "service unavailable"
+
+3. **No failure categorization** ❌
+   - All failures count equally toward max attempts
+   - Should distinguish between:
+     - Connection refused (server down) → open circuit quickly
+     - Timeout (server slow) → continue retrying
+     - Auth error → stop immediately (already handled via `requiresReauthentication`)
+
+4. **No health probe endpoint** ❌
+   - No lightweight `/health` endpoint for quick connectivity checks
+   - Could use HTTP health check before attempting full WebSocket connection
+   - Would enable faster detection of server recovery
+
+5. **No "service unavailable" distinct state** ⚠️
+   - Current error message is generic: "Unable to connect to server after 20 attempts"
+   - No distinct UI state for "circuit open - server unavailable"
+   - No countdown or indicator showing when automatic retry will occur
+
+**Best practice requirements:**
+- After N consecutive failures, stop retrying temporarily ✅ (20 failures stops retrying permanently)
+- Prevents battery drain on persistent server outage ⚠️ (partial - stops after 17 min, not immediately)
+- Show "service unavailable" instead of endless spinner ✅ (shows error after max attempts)
+
+**Gaps**:
+1. Circuit opens too late (20 failures / ~17 minutes vs recommended 3-5 failures)
+2. No automatic "half-open" recovery probes after cooldown
+3. No failure type differentiation (connection refused should open circuit faster)
+4. No health check endpoint for lightweight connectivity probes
+
+**Recommendations**:
+
+1. **Implement faster circuit opening**: Open circuit after 3-5 consecutive failures within 60 seconds
+   ```swift
+   private var consecutiveFailures = 0
+   private var firstFailureTime: Date?
+   private let circuitOpenThreshold = 5
+   private let circuitOpenWindow: TimeInterval = 60.0
+
+   private func recordFailure() {
+       let now = Date()
+       if let first = firstFailureTime,
+          now.timeIntervalSince(first) > circuitOpenWindow {
+           // Window expired, reset
+           consecutiveFailures = 1
+           firstFailureTime = now
+       } else {
+           consecutiveFailures += 1
+           if firstFailureTime == nil {
+               firstFailureTime = now
+           }
+       }
+
+       if consecutiveFailures >= circuitOpenThreshold {
+           openCircuit()
+       }
+   }
+   ```
+
+2. **Add automatic half-open probes**: After circuit opens, periodically probe for recovery
+   ```swift
+   private var circuitState: CircuitState = .closed  // closed, open, halfOpen
+   private var circuitOpenedAt: Date?
+   private let circuitCooldown: TimeInterval = 60.0  // 1 minute
+
+   private func checkCircuitRecovery() {
+       guard circuitState == .open,
+             let openedAt = circuitOpenedAt,
+             Date().timeIntervalSince(openedAt) > circuitCooldown else { return }
+
+       // Transition to half-open, try one probe
+       circuitState = .halfOpen
+       print("🔌 [VoiceCodeClient] Circuit half-open, probing server...")
+       connect()  // Single probe attempt
+   }
+
+   // On successful connection:
+   func connectionSucceeded() {
+       circuitState = .closed
+       consecutiveFailures = 0
+       firstFailureTime = nil
+   }
+
+   // On probe failure in half-open state:
+   func probeFailedInHalfOpen() {
+       circuitState = .open
+       circuitOpenedAt = Date()  // Reset cooldown
+   }
+   ```
+
+3. **Add health check endpoint**: Backend HTTP endpoint for lightweight probes
+   ```clojure
+   ;; In server.clj routes
+   (GET "/health" [] {:status 200 :body "ok"})
+   ```
+   ```swift
+   // iOS: Check health before full WebSocket connection
+   func probeServerHealth() async -> Bool {
+       let url = URL(string: serverURL.replacingOccurrences(of: "ws://", with: "http://")
+                                     .replacingOccurrences(of: "wss://", with: "https://") + "/health")!
+       do {
+           let (_, response) = try await URLSession.shared.data(from: url)
+           return (response as? HTTPURLResponse)?.statusCode == 200
+       } catch {
+           return false
+       }
+   }
+   ```
+
+4. **Differentiate failure types**: Connection refused should open circuit immediately
+   ```swift
+   private func categorizeFailure(_ error: Error) -> FailureCategory {
+       let nsError = error as NSError
+       switch nsError.code {
+       case NSURLErrorCannotConnectToHost, NSURLErrorNotConnectedToInternet:
+           return .serverDown  // Open circuit immediately
+       case NSURLErrorTimedOut:
+           return .timeout  // Continue retrying with backoff
+       default:
+           return .unknown  // Count toward threshold
+       }
+   }
+   ```
+
+5. **Add circuit state to UI**: Show distinct "Service Unavailable" state with auto-recovery countdown
+   ```swift
+   @Published var circuitState: CircuitState = .closed
+   @Published var nextProbeIn: TimeInterval?  // Seconds until next probe
+
+   // In UI:
+   if client.circuitState == .open {
+       VStack {
+           Text("Server Unavailable")
+               .font(.headline)
+           if let nextProbe = client.nextProbeIn {
+               Text("Retrying in \(Int(nextProbe))s")
+                   .font(.caption)
+           }
+           Button("Retry Now") { client.forceReconnect() }
+       }
+   }
+   ```
+
+**Priority**: Medium - Current behavior works but wastes battery retrying for 17 minutes before giving up. Users on mobile networks may experience extended periods of failed retries when temporarily out of coverage. Implementing faster circuit opening (Recommendation 1) and half-open probes (Recommendation 2) would significantly improve UX with moderate implementation effort.
 
 ### Observability
 
