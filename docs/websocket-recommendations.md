@@ -11,7 +11,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Authentication | 2/2 | 0 | 0 |
 | Mobile-Specific | 3/3 | 8 | 8 |
 | Protocol Design | 3/3 | 3 | 3 |
-| Detecting Degraded Connections | 1/3 | 5 | 5 |
+| Detecting Degraded Connections | 2/3 | 10 | 10 |
 | Poor Bandwidth Handling | 0/4 | - | - |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 1/4 | 3 | 3 |
@@ -1021,7 +1021,180 @@ The implementation does **not** track connection quality via RTT (round-trip tim
 
 **Implementation approach**: Start with pong timeout timer (Recommendation 2) as it's self-contained and catches the most common problem (dead connections). Add RTT tracking later for more nuanced quality monitoring.
 
-<!-- Add findings for items 15-16 here -->
+#### 15. Application-level timeouts (not just TCP)
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:312-314` - URLRequest with no timeout configured
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:470-514` - `receiveMessage()` has no timeout, waits indefinitely
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:686-688` - `pong` handler does nothing (no timeout reset)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1203-1210` - Session list request with 5s timeout
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1229-1235` - Session refresh with 10s timeout
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1374-1391` - Compaction with 60s timeout
+- `ios/VoiceCode/Views/RecipeMenuView.swift:167-181` - Recipe start with 15s timeout
+- `ios/VoiceCode/Managers/ResourcesManager.swift:292-296` - Upload with 30s timeout
+- `backend/src/voice_code/claude.clj:run-process-with-file-redirection` - Claude CLI with timeout support
+
+**Findings**:
+The implementation has **inconsistent application-level timeout coverage**:
+
+**What's implemented (specific operations):**
+
+1. **Operation-specific timeouts** ✅
+   - Session list request: 5 second timeout
+   - Session refresh: 10 second timeout
+   - Compaction: 60 second timeout
+   - Recipe start: 15 second timeout
+   - File uploads: 30 second timeout
+   - Claude CLI: 24 hour default timeout (configurable)
+
+2. **Backend Claude invocation** ✅
+   - `invoke-claude` accepts `:timeout` parameter (milliseconds)
+   - Default: 3600000ms (1 hour) for sync, 86400000ms (24 hours) for async
+   - Process forcibly destroyed on timeout
+
+**What's NOT implemented (connection-level):**
+
+1. **WebSocket read timeout** ❌
+   - `receiveMessage()` at line 470 uses callback-based receive with no timeout
+   - Once called, it waits indefinitely for the next message
+   - If the connection goes silent (server unresponsive), client has no way to detect this
+   - iOS `URLSessionWebSocketTask` has no built-in read timeout API
+
+2. **URLRequest timeout** ❌
+   - At line 312: `let request = URLRequest(url: url)` uses defaults
+   - No `timeoutInterval` configured
+   - Default is 60 seconds for new connections, but this only affects initial handshake
+
+3. **Ping/pong timeout** ❌ (Covered in detail in item 14)
+   - Ping sent every 30 seconds
+   - But if pong never arrives, nothing happens
+   - No timeout timer to detect missing pong responses
+
+**Why TCP-only timeout is insufficient:**
+
+The best practice warns that "TCP can keep a dead connection open for minutes." This is exactly the problem:
+
+1. **TCP keepalive** is typically 2+ hours by default on iOS
+2. If server becomes unresponsive (process hang, network issue), TCP doesn't detect it
+3. `receiveMessage()` remains pending, waiting for data that will never arrive
+4. User sees "Connected" but app is effectively frozen
+5. Only remedy is manual force-reconnect or app restart
+
+**Current behavior on silent server:**
+1. User sends prompt → App shows "Processing..."
+2. Server stops responding (crash, network partition)
+3. App stays in loading state indefinitely
+4. Ping timer fires, sends ping (which may or may not arrive)
+5. Pong never arrives, but nothing detects this
+6. User must manually reconnect or restart app
+
+**Best practice requirements:**
+- TCP can keep a dead connection open for minutes ✅ (acknowledged)
+- Set aggressive read timeouts (15-30 seconds) ❌
+- Treat timeout as connection failure, not just slow response ❌
+
+**Gaps**:
+1. No application-level read timeout for WebSocket messages
+2. No timeout on WebSocket receive callback (iOS API limitation)
+3. URLRequest created without explicit timeout configuration
+4. Pong response has no associated timeout (covered in item 14)
+5. Loading indicators can spin indefinitely if server goes silent
+
+**Recommendations**:
+
+1. **Implement operation-level timeout pattern consistently**:
+   All request-response operations should have timeouts. Current implementation is inconsistent:
+   ```swift
+   // Pattern already used for session list (5s), session refresh (10s), compaction (60s)
+   // Apply to ALL operations that expect a response:
+
+   // For sendPrompt, wrap with timeout:
+   func sendPromptWithTimeout(_ text: String, timeout: TimeInterval = 30.0) async throws {
+       let timeoutTask = Task {
+           try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+           throw TimeoutError.requestTimeout
+       }
+
+       let sendTask = Task {
+           return try await sendPromptInternal(text)
+       }
+
+       do {
+           let result = try await sendTask.value
+           timeoutTask.cancel()
+           return result
+       } catch is CancellationError {
+           throw TimeoutError.requestTimeout
+       }
+   }
+   ```
+
+2. **Use pong timeout as proxy for read timeout** (See item 14):
+   Since iOS doesn't expose read timeout on WebSocket, the ping/pong mechanism can serve as application-level liveness detection:
+   ```swift
+   // If pong doesn't arrive within 10 seconds of ping, treat connection as dead
+   // This effectively gives us a 30s + 10s = 40s maximum silent period
+   ```
+
+3. **Add timeout indicator to loading states**:
+   ```swift
+   // Instead of indefinite spinner, show progress with timeout context
+   struct LoadingView: View {
+       @State private var elapsedTime: TimeInterval = 0
+       let maxTime: TimeInterval = 30.0
+
+       var body: some View {
+           VStack {
+               ProgressView(value: min(elapsedTime / maxTime, 1.0))
+               Text(elapsedTime < maxTime ? "Processing..." : "Taking longer than expected")
+           }
+       }
+   }
+   ```
+
+4. **Configure URLRequest timeout for initial connection**:
+   ```swift
+   func connect() {
+       var request = URLRequest(url: url)
+       request.timeoutInterval = 15.0  // Fail fast on initial connection
+       webSocket = URLSession.shared.webSocketTask(with: request)
+       // ...
+   }
+   ```
+
+5. **Add turn-level timeout for Claude responses**:
+   ```swift
+   // When waiting for turn_complete after sending prompt:
+   private let turnTimeout: TimeInterval = 300.0  // 5 minutes max for Claude response
+
+   func startTurnTimer(forSession sessionId: String) {
+       turnTimeoutTimers[sessionId]?.cancel()
+       let timer = DispatchSource.makeTimerSource(queue: .main)
+       timer.schedule(deadline: .now() + turnTimeout)
+       timer.setEventHandler { [weak self] in
+           self?.handleTurnTimeout(sessionId: sessionId)
+       }
+       timer.resume()
+       turnTimeoutTimers[sessionId] = timer
+   }
+
+   func handleTurnTimeout(sessionId: String) {
+       logger.warning("⏱️ Turn timeout for session \(sessionId)")
+       // Option 1: Show warning but keep waiting
+       // Option 2: Unlock session and let user retry
+       // Option 3: Trigger kill_session to force termination
+   }
+   ```
+
+**Priority**: High - The lack of application-level timeout is a fundamental UX problem. Users cannot detect when their connection is actually dead vs. just slow. Combined with item 14 (pong timeout), this creates resilient dead-connection detection.
+
+**Implementation approach**:
+1. First implement pong timeout (item 14) - this gives basic liveness detection
+2. Add URLRequest.timeoutInterval for faster initial connection failure
+3. Add turn-level timeout with user-visible progress indication
+4. Standardize timeout pattern across all request-response operations
+
+<!-- Add findings for item 16 here -->
 
 ### Poor Bandwidth Handling
 
