@@ -12,7 +12,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Mobile-Specific | 3/3 | 8 | 8 |
 | Protocol Design | 3/3 | 3 | 3 |
 | Detecting Degraded Connections | 3/3 | 16 | 15 |
-| Poor Bandwidth Handling | 2/4 | 10 | 7 |
+| Poor Bandwidth Handling | 3/4 | 15 | 11 |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 4/4 | 19 | 14 |
 | Network Transition Handling | 1/3 | 1 | 1 |
@@ -1605,7 +1605,124 @@ The implementation has **no message compression support**. Neither iOS nor the b
 - **Implementation cost**: Medium - requires backend library change or application-level protocol
 - **Recommendation**: Defer unless mobile data usage or large response handling becomes a pain point. The existing truncation approach is acceptable for the current use case.
 
-<!-- Add findings for items 19-20 here -->
+#### 19. Implement adaptive payload sizing
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/AppSettings.swift:76-80` - `maxMessageSizeKB` stored in UserDefaults (static user setting)
+- `ios/VoiceCode/Views/SettingsView.swift:148-149` - UI Stepper for adjusting max message size (50-250 KB range)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:570-572` - Sends `set_max_message_size` once on connection
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1525-1545` - `sendMessage()` logs failures but doesn't track size
+- `backend/src/voice_code/server.clj:102` - `default-max-message-size-kb` constant (100 KB)
+- `backend/src/voice_code/server.clj:153-158` - `get-client-max-message-size-bytes` returns fixed per-client value
+- `backend/src/voice_code/server.clj:462` - Uses client's max-bytes for truncation decisions
+
+**Findings**:
+The implementation has **static payload sizing**, not adaptive. The max message size is configured once by the user and sent to the server on connection:
+
+**Current Static Approach:**
+
+1. **User-configured size limit** (not adaptive):
+   - `maxMessageSizeKB` is a UserDefaults setting (default: 200 KB, range: 50-250 KB)
+   - User manually adjusts via Settings → Stepper control
+   - Value sent to backend once after `connect` message succeeds
+   - Never changes during session regardless of network conditions
+
+2. **No success/failure tracking by size**:
+   - `sendMessage()` logs errors but doesn't record which sizes failed
+   - No history of message delivery outcomes
+   - No correlation between message size and delivery success rate
+   - Error handler sets `currentError` for UI but doesn't inform sizing decisions
+
+3. **No dynamic adjustment**:
+   - Max size remains constant until user manually changes it
+   - No automatic reduction on repeated failures
+   - No escalation back up when network improves
+   - No feedback loop from delivery outcomes to size configuration
+
+4. **Server-side truncation is static**:
+   - Backend uses client's `max-message-size-kb` for all responses
+   - Truncation decision based on JSON byte count vs fixed limit
+   - No adaptive behavior based on recent delivery success
+
+**What the best practice recommends:**
+- Track successful vs failed message deliveries by size ❌ (no tracking)
+- Dynamically reduce max message size on repeated failures ❌ (no dynamic adjustment)
+- Request smaller chunks from server when bandwidth is constrained ❌ (no chunk requests)
+
+**Contrast with existing `set_max_message_size` protocol:**
+The protocol exists for size configuration, but it's designed for static limits (iOS URLSessionWebSocketTask 256KB constraint), not adaptive bandwidth optimization. The message is sent once after auth, not in response to delivery failures.
+
+**Gaps**:
+1. No tracking of message delivery success/failure rates
+2. No correlation of delivery outcomes with message sizes
+3. No dynamic adjustment of max size based on delivery performance
+4. No mechanism to request smaller chunks during bandwidth constraints
+5. No escalation strategy to restore larger sizes when conditions improve
+
+**Recommendations**:
+1. **Track delivery outcomes with size metadata**:
+   ```swift
+   struct DeliveryAttempt {
+       let messageSize: Int
+       let succeeded: Bool
+       let timestamp: Date
+   }
+
+   private var recentDeliveries: [DeliveryAttempt] = []
+
+   func recordDelivery(size: Int, succeeded: Bool) {
+       recentDeliveries.append(DeliveryAttempt(messageSize: size, succeeded: succeeded, timestamp: Date()))
+       // Keep last 20 attempts
+       if recentDeliveries.count > 20 {
+           recentDeliveries.removeFirst()
+       }
+       adjustMaxSizeIfNeeded()
+   }
+   ```
+
+2. **Implement adaptive size reduction**:
+   ```swift
+   func adjustMaxSizeIfNeeded() {
+       let largeFailures = recentDeliveries.filter { $0.messageSize > currentMaxSize / 2 && !$0.succeeded }
+       if largeFailures.count >= 3 {
+           // Reduce max size by 25%
+           let newSize = max(50, Int(Double(currentMaxSize) * 0.75))
+           updateMaxMessageSize(newSize)
+       }
+   }
+   ```
+
+3. **Add escalation for recovery**:
+   ```swift
+   func checkForSizeEscalation() {
+       let recentAll = recentDeliveries.suffix(10)
+       if recentAll.allSatisfy({ $0.succeeded }) && currentMaxSize < userPreferredMaxSize {
+           // Gradually restore toward user preference
+           let newSize = min(userPreferredMaxSize, Int(Double(currentMaxSize) * 1.1))
+           updateMaxMessageSize(newSize)
+       }
+   }
+   ```
+
+4. **Extend protocol for chunk requests** (future enhancement):
+   ```json
+   {
+     "type": "request_chunked",
+     "session_id": "...",
+     "max_chunk_size_kb": 50,
+     "reason": "bandwidth_constrained"
+   }
+   ```
+
+**Assessment**: Low priority for current single-user deployment:
+- **Current truncation works**: Server already handles iOS 256KB limit
+- **User can manually adjust**: Settings UI provides control for edge cases
+- **Single-user scenario**: No multi-client bandwidth competition
+- **Implementation cost**: Medium - requires delivery tracking infrastructure
+- **Recommendation**: Defer unless users report issues with message delivery on poor networks. The static approach with manual adjustment is sufficient for current use case. Would become valuable for:
+  - Users frequently on degraded mobile networks (3G/edge)
+  - Sessions with consistently large responses (code generation, logs)
+  - Multi-device deployment where bandwidth varies significantly
 
 ### Intermittent Signal Handling
 
