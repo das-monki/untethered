@@ -15,7 +15,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Poor Bandwidth Handling | 0/4 | - | - |
 | Intermittent Signal Handling | 0/4 | - | - |
 | App Lifecycle Resilience | 0/4 | - | - |
-| Network Transition Handling | 0/3 | - | - |
+| Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 0/3 | - | - |
 | Observability | 0/3 | - | - |
 | Edge Cases | 0/3 | - | - |
@@ -373,7 +373,77 @@ The implementation fully meets this best practice across all three dimensions:
 
 ### Network Transition Handling
 
-<!-- Add findings for items 29-31 here -->
+#### 31. Handle captive portals
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:489-514` - WebSocket receive failure handler
+- `ios/VoiceCodeShareExtension/ShareViewController.swift:354-420` - HTTP upload error handling
+
+**Findings**:
+The implementation does **not** detect or handle captive portals. A captive portal is a network that requires authentication via a web page (common in hotels, airports, coffee shops) before allowing internet access.
+
+**What captive portals do:**
+- Intercept HTTP requests and return 302 redirects to a login page
+- WebSocket connections fail silently or with generic network errors
+- iOS `URLSessionWebSocketTask` receives errors like `NSURLErrorNotConnectedToInternet` or connection resets
+
+**Current behavior:**
+1. **WebSocket connections**: When the device connects to a captive portal network, WebSocket connections fail with generic errors. The client enters reconnection backoff loop, retrying indefinitely until max attempts (20) are exhausted.
+
+2. **HTTP uploads (Share Extension)**: HTTP POST requests would receive 302 redirects to the captive portal login page. The current code handles `HTTPURLResponse` status codes but doesn't specifically detect redirects to login pages.
+
+3. **User experience**: The app shows "Unable to connect" after exhausting retries, but doesn't explain that a captive portal may be blocking access. Users have no indication they need to open Safari and authenticate with the network.
+
+**What the best practice recommends:**
+- Detect redirect responses (302 to login page)
+- Notify user instead of infinite retry
+- Re-check connectivity after user interaction
+
+**Detection approaches:**
+1. **HTTP probe before WebSocket**: Make an HTTP request to a known endpoint and check if response is redirected to a different host
+2. **iOS CaptiveNetwork API**: Use `NEHotspotHelper` to detect captive networks (requires special entitlement)
+3. **System connectivity check**: Use `captive.apple.com` probe (what iOS uses) or monitor for `kCFErrorDomainCFNetwork` errors
+
+**Gaps**:
+1. No detection of captive portal networks
+2. No specific error message for captive portal scenario
+3. No guidance for users to open Safari and authenticate
+4. No re-check mechanism after user authenticates with portal
+
+**Recommendations**:
+1. **Add captive portal detection probe**: Before WebSocket connection, make HTTP request to backend's HTTP endpoint (or a dedicated `/health` endpoint). If response redirects to different host, assume captive portal.
+   ```swift
+   func checkCaptivePortal() async -> Bool {
+       let probe = URL(string: "http://\(serverHost):\(serverPort)/health")!
+       let (_, response) = try? await URLSession.shared.data(from: probe)
+       if let httpResponse = response as? HTTPURLResponse,
+          (300...399).contains(httpResponse.statusCode) {
+           return true  // Likely captive portal
+       }
+       return false
+   }
+   ```
+
+2. **Show captive portal alert**: When detected, show alert: "This network requires login. Please open Safari to authenticate, then try again."
+   ```swift
+   func showCaptivePortalAlert() {
+       let alert = UIAlertController(
+           title: "Network Login Required",
+           message: "This network requires authentication. Please open Safari to log in, then return to this app.",
+           preferredStyle: .alert
+       )
+       alert.addAction(UIAlertAction(title: "Open Safari", style: .default) { _ in
+           UIApplication.shared.open(URL(string: "http://captive.apple.com")!)
+       })
+       alert.addAction(UIAlertAction(title: "Retry", style: .default) { _ in
+           self.forceReconnect()
+       })
+   }
+   ```
+
+3. **Pause reconnection on captive portal**: Don't burn through retry attempts when captive portal is detected. Wait for user to acknowledge alert before retrying.
+
+4. **Re-check on foreground**: When app returns to foreground after user potentially authenticated with portal, automatically retry connection.
 
 ### Server-Side Resilience
 
@@ -410,7 +480,12 @@ The implementation fully meets this best practice across all three dimensions:
 
 ### Low Priority / Nice to Have
 
-<!-- Add low priority recommendations here -->
+**Captive Portal Detection** (Item 31)
+- Add HTTP probe before WebSocket connection to detect redirect responses
+- Show user-friendly alert explaining they need to authenticate with the network
+- Open Safari to captive.apple.com to trigger iOS's built-in captive portal handling
+- Pause reconnection timer while waiting for user to authenticate
+- See [Captive portal handling findings](#31-handle-captive-portals) for full details
 
 ## Implementation Notes
 
