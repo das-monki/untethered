@@ -12,7 +12,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Mobile-Specific | 3/3 | 8 | 8 |
 | Protocol Design | 3/3 | 3 | 3 |
 | Detecting Degraded Connections | 3/3 | 16 | 15 |
-| Poor Bandwidth Handling | 0/4 | - | - |
+| Poor Bandwidth Handling | 1/4 | 5 | 4 |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 2/4 | 10 | 8 |
 | Network Transition Handling | 1/3 | 1 | 1 |
@@ -1404,7 +1404,101 @@ Without distinguishing slow from dead:
 
 ### Poor Bandwidth Handling
 
-<!-- Add findings for items 17-20 here -->
+#### 17. Implement message prioritization
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1525-1546` - `sendMessage()` sends directly to WebSocket without queue
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:539-554` - Auth flow: hello → connect via callback sequencing
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1280-1287` - `sendMessageAck()` sends acks directly
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1060-1095` - `sendPrompt()` sends directly
+- `backend/src/voice_code/server.clj:455-471` - `send-to-client!` synchronous direct send
+- `backend/src/voice_code/server.clj:393-401` - `send-auth-error!` sends and closes
+
+**Findings**:
+The implementation has **no message prioritization system**. Both iOS and backend use a "send immediately" model:
+
+**iOS Client:**
+1. **No outgoing message queue**: All messages sent directly via `webSocket?.send()` without buffering
+2. **Auth sequenced via callbacks**: When `hello` received, `sendConnectMessage()` called immediately - not a priority queue, just sequential flow
+3. **Acks sent directly**: `sendMessageAck()` calls `sendMessage()` immediately
+4. **Prompts sent directly**: `sendPrompt()` calls `sendMessage()` without any queue check
+5. **Session priority exists but different purpose**: `CDBackendSession+PriorityQueue.swift` implements session ordering (which sessions to work on), not message ordering
+
+**Backend Server:**
+1. **Direct synchronous sends**: `send-to-client!` uses `http/send!` directly with no queue
+2. **No per-client message buffers**: `connected-clients` atom tracks auth state and settings, not pending messages
+3. **No priority differentiation**: All message types go through same send path
+4. **Message ID generation unused**: `generate-message-id` function exists but is never called
+
+**Current implicit ordering:**
+- Auth messages: Sent first only because protocol requires authentication before other messages can be processed
+- Acks: Sent on receipt of replay messages (reactive, not prioritized)
+- Prompts: Sent whenever user initiates (no queue means no congestion handling)
+
+**Best practice requirements:**
+- Queue outgoing messages by priority ❌ (no queue exists)
+- Send critical messages (auth, acks) before bulk data ❌ (no priority system)
+- Drop or defer low-priority messages under congestion ❌ (no congestion detection or message dropping)
+
+**Gaps**:
+1. No outgoing message queue on iOS client
+2. No priority classification for message types
+3. No congestion detection (network quality not monitored)
+4. No mechanism to defer or drop low-priority messages
+5. Critical messages (auth, acks) not explicitly prioritized over bulk data
+
+**Recommendations**:
+1. **Classify message priorities**:
+   - P0 (Critical): `ping`, `pong`, `connect`, `message_ack` - must always be sent immediately
+   - P1 (High): `prompt`, `subscribe`, `set_directory` - user-initiated actions
+   - P2 (Normal): `set_max_message_size`, `compact_session` - configuration/maintenance
+   - P3 (Low): `execute_command`, `get_command_history` - deferrable operations
+
+2. **Add priority queue on iOS** (optional, for degraded network handling):
+   ```swift
+   struct PrioritizedMessage {
+       let message: [String: Any]
+       let priority: Int  // 0 = highest
+       let timestamp: Date
+   }
+
+   private var messageQueue: [PrioritizedMessage] = []
+   private var isSending = false
+
+   func queueMessage(_ message: [String: Any], priority: Int = 1) {
+       let prioritized = PrioritizedMessage(message: message, priority: priority, timestamp: Date())
+       messageQueue.append(prioritized)
+       messageQueue.sort { $0.priority < $1.priority || ($0.priority == $1.priority && $0.timestamp < $1.timestamp) }
+       processQueue()
+   }
+   ```
+
+3. **Congestion detection**: Track message send success/failure rate and RTT. When degraded:
+   - Increase send delay between messages
+   - Drop P3 messages if queue grows too long
+   - Coalesce duplicate requests (e.g., multiple `ping` messages)
+
+4. **Priority-aware sending for auth/acks**:
+   ```swift
+   func sendConnectMessage() {
+       queueMessage(connectMessage, priority: 0)  // Critical
+   }
+
+   func sendMessageAck(_ messageId: String) {
+       queueMessage(ackMessage, priority: 0)  // Critical
+   }
+
+   func sendPrompt(_ text: String, ...) {
+       queueMessage(promptMessage, priority: 1)  // High
+   }
+   ```
+
+**Assessment**: Low impact for current single-user deployment. Would become valuable if:
+- Network conditions are frequently degraded
+- Multiple operations need to be queued (batch scenarios)
+- Client needs to handle connection recovery gracefully
+
+<!-- Add findings for items 18-20 here -->
 
 ### Intermittent Signal Handling
 
