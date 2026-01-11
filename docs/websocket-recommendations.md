@@ -9,7 +9,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Connection Management | 3/3 | 1 | 1 |
 | Message Delivery | 2/2 | 2 | 2 |
 | Authentication | 2/2 | 0 | 0 |
-| Mobile-Specific | 0/3 | - | - |
+| Mobile-Specific | 1/3 | 0 | 0 |
 | Protocol Design | 2/3 | 3 | 3 |
 | Detecting Degraded Connections | 0/3 | - | - |
 | Poor Bandwidth Handling | 0/4 | - | - |
@@ -305,7 +305,69 @@ The implementation fully supports credential persistence across reconnections wi
 
 ### Mobile-Specific Concerns
 
-<!-- Add findings for items 8-10 here -->
+#### 8. Respect message size limits (256KB iOS)
+**Status**: Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/AppSettings.swift:76-80` - `maxMessageSizeKB` setting with UserDefaults persistence
+- `ios/VoiceCode/Managers/AppSettings.swift:264` - Default value of 200 KB
+- `ios/VoiceCode/Views/SettingsView.swift:147-155` - UI stepper (50-250 KB range) with explanatory text
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:570-572` - Sends `set_max_message_size` after connection
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1106-1113` - `sendMaxMessageSize()` method
+- `backend/src/voice_code/server.clj:102` - `default-max-message-size-kb` constant (100 KB)
+- `backend/src/voice_code/server.clj:108-150` - `truncate-text-middle` function with UTF-8 aware truncation
+- `backend/src/voice_code/server.clj:153-158` - `get-client-max-message-size-bytes` function
+- `backend/src/voice_code/server.clj:160-221` - `truncate-content-block`, `truncate-message-text` for nested structures
+- `backend/src/voice_code/server.clj:223-257` - `truncate-messages-array` with iterative budget halving
+- `backend/src/voice_code/server.clj:259-328` - `build-session-history-response` with delta sync and per-message truncation
+- `backend/src/voice_code/server.clj:330-370` - `truncate-response-text` for response messages
+- `backend/src/voice_code/server.clj:454-471` - `send-to-client!` applies truncation before sending
+- `backend/test/voice_code/server_test.clj:1539-1669` - Comprehensive truncation tests
+- `STANDARDS.md:195-210` - Protocol spec for `set_max_message_size` message
+
+**Findings**:
+The implementation fully addresses the iOS 256 KB WebSocket message limit with comprehensive server-side truncation:
+
+1. **Configurable limit** ✅
+   - iOS default: 200 KB (conservative margin below 256 KB limit)
+   - User-adjustable: 50-250 KB via Settings stepper
+   - Backend default: 100 KB (used when client doesn't specify)
+   - Setting persisted to UserDefaults, sent to backend after each connection
+
+2. **Server-side truncation** ✅
+   - `truncate-text-middle`: Preserves first and last portions of text with `[truncated ~N KB]` marker
+   - UTF-8 aware: Handles multi-byte characters correctly at truncation boundaries
+   - Applied to all outgoing messages via `send-to-client!` wrapper
+   - Handles nested structures: `text` fields, `content` arrays, `tool_result` blocks
+
+3. **Session history smart truncation** ✅
+   - `build-session-history-response`: Prioritizes newest messages when budget exhausted
+   - Per-message limit: 20 KB individual message cap prevents single large message from consuming entire budget
+   - Delta sync: `last_message_id` reduces payload by returning only new messages
+   - Returns `is-complete: false` when truncation occurs, enabling pagination
+
+4. **Protocol support** ✅
+   - `set_max_message_size` message sent immediately after connection
+   - Backend stores per-client setting in `connected-clients` atom
+   - Ack response confirms setting: "Max message size set to N KB"
+
+5. **File uploads use HTTP** ✅
+   - Large file uploads use HTTP POST endpoint, not WebSocket
+   - Share Extension uses `/upload` endpoint with Bearer token auth
+   - Avoids WebSocket message size constraints for file transfers
+   - Base64 encoding means ~33% overhead, but HTTP has no practical limit
+
+6. **Test coverage** ✅
+   - `test-truncate-text-middle-*`: Tests under/at/over limit, preserving ends, marker accuracy
+   - `test-truncate-response-text-*`: Tests response message truncation
+   - `test-get-client-max-message-size-bytes`: Tests default and client-specific settings
+   - `test-handle-set-max-message-size`: Tests message handling and validation
+   - `test-build-session-history-*`: Tests budget exhaustion, small/large messages, delta sync
+
+**Gaps**: None identified.
+
+**Recommendations**: None - implementation fully meets best practice with comprehensive server-side truncation, user-configurable limits, and HTTP fallback for large uploads.
+
+<!-- Add findings for items 9-10 here -->
 
 ### Protocol Design
 
