@@ -18,7 +18,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
 | Observability | 3/3 | 16 | 16 |
-| Edge Cases | 0/3 | - | - |
+| Edge Cases | 1/3 | 2 | 2 |
 
 ## Findings
 
@@ -3217,7 +3217,55 @@ The iOS client implements user-visible connection status with partial coverage:
 
 ### Edge Cases
 
-<!-- Add findings for items 38-40 here -->
+#### 38. Clock skew handling
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:682-689` - `extractTimestamp(from:)` parses server timestamps from backend messages
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:784-789` - Server timestamp used for message.timestamp when available
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:264` - Optimistic messages use client `Date()` initially
+- `ios/VoiceCode/Models/CDMessage.swift:22` - `serverTimestamp` field stores authoritative server time
+- `ios/VoiceCode/Models/CDMessage.swift:93` - Messages sorted by `timestamp` field for display
+- `backend/test/voice_code/real_jsonl_test.clj:117-129` - Tests verify timestamps come from Claude CLI in ISO-8601 format
+
+**Findings**:
+The implementation **partially** follows this best practice:
+
+1. **Server assigns authoritative timestamps**:
+   - All message timestamps originate from Claude CLI which writes ISO-8601 timestamps to `.jsonl` session files
+   - Backend passes these timestamps through to iOS unchanged
+   - iOS parses and stores server timestamps via `extractTimestamp(from:)`
+
+2. **Server timestamps used for ordering**:
+   - Messages are sorted by `timestamp` field in CoreData
+   - When server timestamp is available, it's used for both `timestamp` and `serverTimestamp` fields
+   - `CDMessage.fetchMessages()` sorts ascending by timestamp for chronological display
+
+3. **Protocol acknowledges out-of-order delivery**:
+   - `STANDARDS.md:443` explicitly states: "No strict ordering: Messages may be delivered out of order. Timestamps provide ordering hints."
+
+**Gaps**:
+1. **Optimistic messages use client time**: When creating optimistic messages before server confirmation, iOS uses `Date()` (client clock) for the initial `timestamp`. This could cause ordering issues if the client clock is skewed:
+   - Optimistic message created at client time T1
+   - Server responds with timestamp T2 (could be before T1 if client clock ahead)
+   - Message may appear out of order until reconciliation updates to server timestamp
+
+2. **No clock skew detection or warning**: The system doesn't detect when client/server clocks are significantly different. Large skew (>30s) could cause confusing UI behavior during optimistic message display.
+
+**Recommendations**:
+1. **Use relative positioning for optimistic messages**: Instead of absolute timestamps, position optimistic messages after the most recent confirmed message and update position on server confirmation. This avoids clock skew issues entirely for optimistic UI.
+
+2. **Add optional clock skew detection**: On first server response, compare server timestamp to client time. If skew exceeds threshold (e.g., 30 seconds), log a warning. This aids debugging without adding complexity:
+   ```swift
+   // In SessionSyncManager.handleSessionUpdated
+   if let serverTime = extractTimestamp(from: messageData) {
+       let skew = abs(serverTime.timeIntervalSinceNow)
+       if skew > 30 {
+           logger.warning("Clock skew detected: \(Int(skew))s between client and server")
+       }
+   }
+   ```
+
+<!-- Add findings for items 39-40 here -->
 
 ## Recommended Actions
 
