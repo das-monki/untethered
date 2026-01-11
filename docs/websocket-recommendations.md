@@ -17,7 +17,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | App Lifecycle Resilience | 2/4 | 10 | 8 |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
-| Observability | 2/3 | 11 | 11 |
+| Observability | 3/3 | 16 | 16 |
 | Edge Cases | 0/3 | - | - |
 
 ## Findings
@@ -2789,7 +2789,89 @@ Client-side metrics tracking is **not implemented**. The system has no mechanism
 
 **Priority**: Medium-Low - Metrics are valuable for debugging and understanding user experience issues, but the app functions without them. The most impactful metric would be ping/pong RTT (Recommendation 3) since it enables connection quality detection from Item 14. Implementing the basic ConnectionMetrics struct (Recommendation 1) provides a foundation for all other metrics.
 
-<!-- Add findings for item 37 here -->
+#### 37. User-visible connection status
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:17` - `@Published var isConnected = false` (binary state)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:351-356` - `forceReconnect()` for manual reconnection
+- `ios/VoiceCode/Views/ConversationView.swift:242-257` - Connection status button UI
+- `ios/VoiceCode/Views/AuthenticationRequiredView.swift` - Authentication error state view
+
+**Findings**:
+The iOS client implements user-visible connection status with partial coverage:
+
+1. **States displayed**:
+   - "Connected" (green dot) - when `isConnected = true`
+   - "Disconnected" (red dot) - when `isConnected = false`
+
+2. **Manual reconnection**: Users can tap the status indicator to trigger `forceReconnect()`, which resets backoff and reconnects immediately.
+
+3. **Authentication errors**: A dedicated `AuthenticationRequiredView` shows when `requiresReauthentication = true`, displaying error message and QR scan/manual entry options.
+
+4. **Location**: Connection status is visible only in `ConversationView` (bottom of chat). It is not visible in the main `DirectoryListView` project list.
+
+**Gaps**:
+1. **No "Connecting..." state** - The UI jumps directly from "Disconnected" to "Connected" with no intermediate state. Users see red during the multi-second reconnection process.
+
+2. **No degraded connection indication** - There's no visual distinction between a healthy connection and a slow/degraded one (as would be detected by RTT monitoring from Item 14).
+
+3. **Status not visible globally** - Connection status is only shown in conversation view. Users in the project list or settings don't know if they're connected.
+
+4. **No reconnection progress** - During reconnection attempts, users don't see "Reconnecting (attempt 3/20)" or similar feedback.
+
+5. **No "Offline" state** - There's no network-unavailable state distinct from server-unavailable (since NWPathMonitor isn't implemented per Item 2).
+
+**Recommendations**:
+1. **Add "Connecting..." state**:
+   ```swift
+   enum ConnectionState {
+       case disconnected
+       case connecting
+       case connected
+       case degraded  // Future: when RTT exceeds threshold
+   }
+
+   @Published var connectionState: ConnectionState = .disconnected
+   ```
+   Update UI to show yellow dot and "Connecting..." text during connection attempts.
+
+2. **Show connection status globally**:
+   - Add status indicator to navigation bar or toolbar in `DirectoryListView`
+   - Use compact form (just colored dot) when space is limited
+   - Consider adding to macOS menu bar for always-visible status
+
+3. **Add reconnection progress feedback**:
+   ```swift
+   var statusText: String {
+       switch connectionState {
+       case .disconnected:
+           if reconnectionAttempts > 0 {
+               return "Reconnecting (\(reconnectionAttempts)/\(maxReconnectionAttempts))..."
+           }
+           return "Disconnected"
+       case .connecting:
+           return "Connecting..."
+       case .connected:
+           return "Connected"
+       case .degraded:
+           return "Slow Connection"
+       }
+   }
+   ```
+
+4. **Show "Offline" when network unreachable** (depends on Item 2):
+   ```swift
+   case .disconnected:
+       if !networkPath.isReachable {
+           return "Offline"
+       }
+   ```
+
+5. **Avoid false "Connected" for degraded connections** (depends on Item 14):
+   - If ping/pong RTT exceeds 2x baseline, show "Slow Connection" (yellow)
+   - If pong not received within timeout, show "Connection Lost" (red)
+
+**Priority**: Medium - Current "Connected/Disconnected" toggle works but leaves users uncertain during reconnection. The "Connecting..." state (Recommendation 1) is highest value for lowest effort. Global status (Recommendation 2) and progress feedback (Recommendation 3) provide significant UX improvements. Degraded state detection (Recommendation 5) depends on Item 14 implementation.
 
 ### Edge Cases
 
