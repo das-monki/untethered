@@ -14,7 +14,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Detecting Degraded Connections | 1/3 | 5 | 5 |
 | Poor Bandwidth Handling | 0/4 | - | - |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
-| App Lifecycle Resilience | 0/4 | - | - |
+| App Lifecycle Resilience | 1/4 | 3 | 3 |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
 | Observability | 0/3 | - | - |
@@ -1519,7 +1519,81 @@ The implementation does **not** handle half-open connections. A half-open connec
 
 ### App Lifecycle Resilience
 
-<!-- Add findings for items 25-28 here -->
+#### 25. Persist pending messages to disk
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Models/CDMessage.swift:8-12` - `MessageStatus` enum with `sending`, `confirmed`, `error` states
+- `ios/VoiceCode/Managers/SessionSyncManager.swift:242-288` - `createOptimisticMessage()` creates CoreData message with `.sending` status before network call
+- `ios/VoiceCode/Views/ConversationView.swift:771-807` - `sendPrompt()` creates optimistic message BEFORE sending to backend
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1525-1546` - `sendMessage()` sends directly to WebSocket without retry queue
+
+**Findings**:
+The iOS client implements **partial** message persistence through CoreData:
+
+1. **Optimistic messages are persisted**: User messages are saved to CoreData with `status = .sending` BEFORE the network request is made (`createOptimisticMessage()` is called before `sendMessage()`). This satisfies the "write to disk before sending" requirement.
+
+2. **Message status tracking**: The `MessageStatus` enum tracks three states:
+   - `.sending` - Optimistic, not yet confirmed by server
+   - `.confirmed` - Server acknowledgment received
+   - `.error` - Failed to send
+
+3. **Reconciliation on server response**: When `session_updated` arrives from backend, the `handleSessionUpdated()` method reconciles optimistic messages by matching role and text, then updates status to `.confirmed`.
+
+**What's missing**:
+
+1. **No retry queue**: Messages with `.sending` status are not automatically retried on reconnection. If the app terminates after writing the optimistic message but before receiving server confirmation, the message is lost.
+
+2. **No `status = .error` handling**: The code defines a `.error` status but it's never used. Failed sends don't update the message status.
+
+3. **No orphan detection**: On app launch, there's no check for `.sending` messages that need to be retried or marked as failed.
+
+4. **Delete from disk only after ACK**: The best practice says "delete from disk only after server ack" - but we don't delete messages, we update their status. However, there's no mechanism to detect messages that were never acknowledged.
+
+5. **App termination scenario**: If the app is terminated (force quit, crash, or iOS kills it for memory) after `createOptimisticMessage()` but before backend processes the prompt:
+   - Message exists in CoreData with `.sending` status
+   - Backend never received the prompt
+   - On next launch, no code checks for orphaned `.sending` messages
+
+**Gaps**:
+1. No retry queue for pending messages on reconnection
+2. No startup check for orphaned `.sending` messages
+3. No timeout/failure detection for messages stuck in `.sending` state
+4. No user-visible indicator for pending messages that haven't been sent
+
+**Recommendations**:
+1. **Add startup orphan detection**: On app launch, query for messages with `status = .sending` older than a threshold (e.g., 30 seconds):
+   ```swift
+   func checkOrphanedMessages() {
+       let request = CDMessage.fetchRequest()
+       request.predicate = NSPredicate(format: "status == %@", MessageStatus.sending.rawValue)
+       let orphans = try? context.fetch(request)
+       for message in orphans ?? [] {
+           if message.timestamp.timeIntervalSinceNow < -30 {
+               message.messageStatus = .error
+               // Or: retry sending
+           }
+       }
+   }
+   ```
+
+2. **Add retry queue on reconnection**: When WebSocket reconnects after being disconnected, query for `.sending` messages and retry them:
+   ```swift
+   func retryPendingMessages(sessionId: UUID) {
+       let request = CDMessage.fetchRequest()
+       request.predicate = NSPredicate(
+           format: "sessionId == %@ AND status == %@",
+           sessionId as CVarArg,
+           MessageStatus.sending.rawValue
+       )
+       // Resend to backend
+   }
+   ```
+
+3. **Show pending indicator in UI**: Display a "sending..." indicator for messages with `.sending` status, with option to retry or cancel.
+
+4. **Add failure timeout**: If a message stays in `.sending` for more than N seconds without server acknowledgment, update status to `.error` and notify user.
+
+**Priority**: Medium-High - The current implementation provides partial resilience (messages survive brief disconnections during active session), but doesn't handle app termination scenarios. This is a common mobile scenario (user force quits app, iOS terminates for memory, crash). Users could lose important prompts they thought were sent.
 
 ### Network Transition Handling
 
