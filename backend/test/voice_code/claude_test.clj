@@ -27,7 +27,7 @@
   (testing "Successful Claude invocation"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                   voice-code.claude/run-process-with-file-redirection
-                  (fn [cli-path args working-dir timeout-ms session-id]
+                  (fn [cli-path args working-dir timeout-ms session-id & _]
                     {:exit 0
                      :out "[{\"type\":\"result\",\"result\":\"Hello from Claude\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
       (let [result (claude/invoke-claude "test prompt")]
@@ -40,7 +40,7 @@
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
@@ -56,7 +56,7 @@
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"Resumed\",\"session_id\":\"test-456\",\"is_error\":false}]"})]
@@ -69,7 +69,7 @@
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"New session\",\"session_id\":\"new-789\",\"is_error\":false}]"})]
@@ -84,7 +84,7 @@
           home (System/getProperty "user.home")]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-with-dir working-dir)
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
@@ -97,7 +97,7 @@
   (testing "Handle CLI execution failure"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                   voice-code.claude/run-process-with-file-redirection
-                  (fn [cli-path args working-dir timeout-ms session-id]
+                  (fn [cli-path args working-dir timeout-ms session-id & _]
                     {:exit 1
                      :err "Command failed"
                      :out ""})]
@@ -110,7 +110,7 @@
   (testing "Handle JSON parsing errors"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                   voice-code.claude/run-process-with-file-redirection
-                  (fn [cli-path args working-dir timeout-ms session-id]
+                  (fn [cli-path args working-dir timeout-ms session-id & _]
                     {:exit 0
                      :out "invalid json"})]
       (let [result (claude/invoke-claude "test")]
@@ -122,7 +122,7 @@
     (let [result-promise (promise)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"Async success\",\"session_id\":\"async-123\",\"is_error\":false}]"})]
 
@@ -163,7 +163,7 @@
     (let [result-promise (promise)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       {:exit 1
                        :err "CLI error"
                        :out ""})]
@@ -204,7 +204,7 @@
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
@@ -217,7 +217,7 @@
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
@@ -229,7 +229,7 @@
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
@@ -241,7 +241,7 @@
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
@@ -254,7 +254,7 @@
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
@@ -266,7 +266,7 @@
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"OK\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
@@ -474,7 +474,7 @@
   (testing "Successful name inference returns cleaned name"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                   voice-code.claude/run-process-with-file-redirection
-                  (fn [cli-path args working-dir timeout-ms session-id]
+                  (fn [cli-path args working-dir timeout-ms session-id & _]
                     {:exit 0
                      :out "[{\"type\":\"result\",\"result\":\"Fix authentication bug\",\"session_id\":\"test-inference-123\",\"is_error\":false}]"})]
       (let [result (claude/invoke-claude-for-name-inference "I need to fix the auth system")]
@@ -486,7 +486,7 @@
     (let [called-args (atom nil)]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       (reset! called-args {:cli-path cli-path :args args :working-dir working-dir :timeout-ms timeout-ms :session-id session-id})
                       {:exit 0
                        :out "[{\"type\":\"result\",\"result\":\"Test name\",\"session_id\":\"test-123\",\"is_error\":false}]"})]
@@ -521,7 +521,7 @@
   (testing "Handles CLI errors"
     (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                   voice-code.claude/run-process-with-file-redirection
-                  (fn [cli-path args working-dir timeout-ms session-id]
+                  (fn [cli-path args working-dir timeout-ms session-id & _]
                     {:exit 1
                      :err "CLI error"})]
       (let [result (claude/invoke-claude-for-name-inference "test")]
@@ -578,7 +578,7 @@
     (let [tracked-sessions (atom [])]
       (with-redefs [claude/get-claude-cli-path (fn [] "/mock/claude")
                     voice-code.claude/run-process-with-file-redirection
-                    (fn [cli-path args working-dir timeout-ms session-id]
+                    (fn [cli-path args working-dir timeout-ms session-id & _]
                       ;; Capture session-id parameter
                       (swap! tracked-sessions conj session-id)
                       {:exit 0

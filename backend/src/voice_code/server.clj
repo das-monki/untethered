@@ -15,7 +15,8 @@
             [voice-code.commands-history :as cmd-history]
             [voice-code.resources :as resources]
             [voice-code.recipes :as recipes]
-            [voice-code.orchestration :as orch])
+            [voice-code.orchestration :as orch]
+            [voice-code.env :as env])
   (:gen-class))
 
 ;; JSON key conversion utilities
@@ -1530,16 +1531,15 @@
                                               :details {:step "git_worktree_add"
                                                         :stderr (:stderr git-result)}})
 
-                            ;; Step 4b: Initialize Beads
-                            (let [bd-result (worktree/init-beads! worktree-path)]
+;; Step 4b: Initialize local Beads database for worktree isolation
+                            (let [bd-result (env/ensure-beads-local! worktree-path sanitized-name)]
                               (if-not (:success bd-result)
                                 (send-to-client! channel
                                                  {:type :worktree-session-error
                                                   :success false
                                                   :error (:error bd-result)
                                                   :error-type :beads-failed
-                                                  :details {:step "bd_init"
-                                                            :stderr (:stderr bd-result)}})
+                                                  :details {:step "bd_init_local"}})
 
                                 ;; Step 4c: Invoke Claude Code
                                 (let [prompt (worktree/format-worktree-prompt session-name worktree-path

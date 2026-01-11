@@ -3,7 +3,8 @@
   (:require [clojure.tools.logging :as log]
             [clojure.string :as str]
             [clojure.java.shell :as shell]
-            [voice-code.commands-history :as history]))
+            [voice-code.commands-history :as history]
+            [voice-code.env :as env]))
 
 ;; Active command sessions tracking
 ;; Atom tracking active command sessions: command-session-id -> {:process Process :metadata map}
@@ -55,9 +56,15 @@
   [shell-command working-directory command-session-id output-callback complete-callback]
   (try
     (let [start-time (System/currentTimeMillis)
+          ;; Get environment variables for this directory (e.g., BEADS_DB for worktrees)
+          env-vars (env/env-for-directory working-directory)
           ;; Use bash -c to execute the full command string
           pb (ProcessBuilder. ["bash" "-c" shell-command])
           _ (.directory pb (java.io.File. working-directory))
+          ;; Add environment variables (ProcessBuilder.environment() inherits from parent,
+          ;; so .putAll adds to rather than replaces the environment)
+          _ (when (seq env-vars)
+              (.putAll (.environment pb) env-vars))
           process (.start pb)]
 
       ;; Track in active sessions

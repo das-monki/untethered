@@ -133,3 +133,6 @@ voice-code-dev2/
 vc-execution.log
 
 backend/server.out
+
+# Worktree-local beads database
+.beads-local/

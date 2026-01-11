@@ -5,7 +5,8 @@
             [cheshire.core :as json]
             [clojure.tools.logging :as log]
             [clojure.java.io :as io]
-            [clojure.java.process :as proc])
+            [clojure.java.process :as proc]
+            [voice-code.env :as env])
   (:import [java.io File]
            [java.lang ProcessBuilder$Redirect]))
 
@@ -80,12 +81,15 @@
   Returns a map with :exit, :out, and :err.
   This function can be mocked in tests.
   Supports optional timeout in milliseconds.
-  If session-id is provided, tracks the process in active-claude-processes."
+  If session-id is provided, tracks the process in active-claude-processes.
+  If env-vars is provided (a map), those environment variables are added to the process."
   ([cli-path args working-dir]
-   (run-process-with-file-redirection cli-path args working-dir nil nil))
+   (run-process-with-file-redirection cli-path args working-dir nil nil nil))
   ([cli-path args working-dir timeout-ms]
-   (run-process-with-file-redirection cli-path args working-dir timeout-ms nil))
+   (run-process-with-file-redirection cli-path args working-dir timeout-ms nil nil))
   ([cli-path args working-dir timeout-ms session-id]
+   (run-process-with-file-redirection cli-path args working-dir timeout-ms session-id nil))
+  ([cli-path args working-dir timeout-ms session-id env-vars]
    (let [stdout-path (java.nio.file.Files/createTempFile
                       "claude-stdout-" ".json"
                       (into-array java.nio.file.attribute.FileAttribute
@@ -102,7 +106,8 @@
        (let [process-opts (cond-> {:out (ProcessBuilder$Redirect/to stdout-file)
                                    :err (ProcessBuilder$Redirect/to stderr-file)
                                    :in :pipe}
-                            working-dir (assoc :dir working-dir))
+                            working-dir (assoc :dir working-dir)
+                            (seq env-vars) (assoc :env env-vars))
              all-args (into [cli-path] args)
              process (apply proc/start process-opts all-args)
              exit-ref (proc/exit-ref process)]
@@ -142,6 +147,8 @@
       (throw (ex-info "Claude CLI not found" {})))
 
     (let [expanded-dir (expand-tilde working-directory)
+          ;; Compute environment variables for this directory (e.g., BEADS_DB for worktrees)
+          env-vars (when expanded-dir (env/env-for-directory expanded-dir))
           ;; Determine which session-id to use for tracking (new or resume)
           tracking-session-id (or new-session-id resume-session-id)
           ;; Trim and check if system-prompt has content
@@ -161,9 +168,10 @@
                        :resume-session-id resume-session-id
                        :working-directory expanded-dir
                        :model model
-                       :has-system-prompt has-system-prompt?})
+                       :has-system-prompt has-system-prompt?
+                       :env-vars (when (seq env-vars) env-vars)})
 
-          result (run-process-with-file-redirection cli-path args expanded-dir timeout tracking-session-id)]
+          result (run-process-with-file-redirection cli-path args expanded-dir timeout tracking-session-id env-vars)]
 
       (log/debug "Claude CLI completed"
                  {:exit (:exit result)
