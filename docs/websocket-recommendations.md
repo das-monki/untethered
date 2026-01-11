@@ -9,7 +9,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Connection Management | 3/3 | 1 | 1 |
 | Message Delivery | 2/2 | 2 | 2 |
 | Authentication | 2/2 | 0 | 0 |
-| Mobile-Specific | 1/3 | 0 | 0 |
+| Mobile-Specific | 2/3 | 4 | 4 |
 | Protocol Design | 3/3 | 3 | 3 |
 | Detecting Degraded Connections | 0/3 | - | - |
 | Poor Bandwidth Handling | 0/4 | - | - |
@@ -367,7 +367,137 @@ The implementation fully addresses the iOS 256 KB WebSocket message limit with c
 
 **Recommendations**: None - implementation fully meets best practice with comprehensive server-side truncation, user-configurable limits, and HTTP fallback for large uploads.
 
-<!-- Add findings for items 9-10 here -->
+#### 9. Handle app lifecycle (background/foreground)
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:93-131` - `setupLifecycleObservers()` registers for foreground/background notifications
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:133-148` - `handleAppBecameActive()` and `handleAppEnteredBackground()` handlers
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:328-347` - `disconnect()` method with clean WebSocket closure
+- `ios/VoiceCode/VoiceCodeApp.swift:183-199` - RootView foreground handler for pending uploads
+- `ios/VoiceCode/Views/DirectoryListView.swift:44-45` - `scenePhase` tracking for UI updates
+- `ios/VoiceCode/Views/ConversationView.swift:50` - `scenePhase` for suspending message list rendering
+- `ios/VoiceCodeTests/VoiceCodeClientTests.swift:464-491` - Lifecycle observer tests
+- `ios/VoiceCodeTests/VoiceCodeClientTests.swift:1584-1592` - Foreground reconnection skip test
+
+**Findings**:
+The implementation has **partial app lifecycle handling** with foreground reconnection but minimal background handling:
+
+**What's implemented:**
+
+1. **Reconnect on foreground** ✅
+   - `setupLifecycleObservers()` registers for platform-specific notifications:
+     - iOS: `UIApplication.willEnterForegroundNotification`
+     - macOS: `NSApplication.didBecomeActiveNotification`
+   - `handleAppBecameActive()` triggers reconnection when app returns to foreground
+   - Reconnection backoff is reset on foreground (`reconnectionAttempts = 0`)
+   - Reconnection skipped if `requiresReauthentication = true` (prevents loops on invalid key)
+
+2. **Foreground triggers pending work** ✅
+   - `RootView` listens for foreground and processes pending uploads (`resourcesManager.processPendingUploads()`)
+   - `DirectoryListView` refreshes caches when returning from background
+   - `ConversationView` suspends message list rendering in background (`scenePhase != .active`)
+
+3. **Clean disconnect method exists** ✅
+   - `disconnect()` calls `webSocket?.cancel(with: .goingAway, reason: nil)`
+   - Stops ping timer, cancels reconnection timer
+   - Clears locked sessions to prevent stuck state
+
+4. **Test coverage** ✅
+   - `testLifecycleObserversSetup()` verifies initialization
+   - `testPlatformLifecycleNotifications()` verifies platform conditionals compile
+   - `testForegroundReconnectionSkippedWhenReauthRequired()` verifies reauth flag check
+
+**What's NOT implemented:**
+
+1. **No disconnect on background** ❌
+   - `handleAppEnteredBackground()` only logs: `"App entering background"`
+   - WebSocket connection remains open when app enters background
+   - iOS may suspend the app with the WebSocket in an undefined state
+   - When iOS suspends the app, the connection dies without clean closure
+   - Server sees abrupt disconnect, not graceful `goingAway` close
+
+2. **No background task for critical operations** ❌
+   - No use of `UIApplication.beginBackgroundTask` for in-flight operations
+   - If user sends prompt and immediately backgrounds app:
+     - WebSocket may be suspended mid-response
+     - No mechanism to complete the turn before suspension
+   - Pending acks are not sent before suspension
+
+3. **No connection state persistence** ⚠️
+   - When app backgrounds, connection state (authenticated, subscriptions) is lost
+   - On foreground, full reconnection required (hello → connect → restore subscriptions)
+   - Could persist last subscription list for faster restoration
+
+**Best practice requirements:**
+- Disconnect cleanly on background/suspend ❌ (connection left open, dies when suspended)
+- Reconnect on foreground ✅ (implemented with backoff reset)
+- Consider background task for critical message delivery ❌ (not implemented)
+
+**Gaps**:
+1. No clean disconnect when entering background - WebSocket left open
+2. No `beginBackgroundTask` to complete in-flight operations before suspension
+3. No sending of pending acks before suspension
+4. Server doesn't know if client disconnected intentionally vs was suspended
+
+**Recommendations**:
+1. **Add clean disconnect on background**: Close WebSocket gracefully when entering background
+   ```swift
+   private func handleAppEnteredBackground() {
+       print("📱 [VoiceCodeClient] App entering background, disconnecting cleanly")
+       disconnect()  // Clean WebSocket close with .goingAway
+   }
+   ```
+
+2. **Add background task for critical operations**: Complete in-flight turn before suspension
+   ```swift
+   private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+
+   private func handleAppEnteredBackground() {
+       // Request time to complete critical work
+       backgroundTaskID = UIApplication.shared.beginBackgroundTask { [weak self] in
+           // Expiration handler - clean up and end task
+           self?.disconnect()
+           if let taskID = self?.backgroundTaskID, taskID != .invalid {
+               UIApplication.shared.endBackgroundTask(taskID)
+           }
+           self?.backgroundTaskID = .invalid
+       }
+
+       // If no pending operations, disconnect immediately
+       if !hasPendingOperations {
+           disconnect()
+           endBackgroundTask()
+       }
+       // Otherwise, wait for turn_complete then disconnect
+   }
+
+   // Call when turn completes or times out
+   private func endBackgroundTask() {
+       if backgroundTaskID != .invalid {
+           UIApplication.shared.endBackgroundTask(backgroundTaskID)
+           backgroundTaskID = .invalid
+       }
+   }
+   ```
+
+3. **Send pending acks before suspension**: Flush any unsent acknowledgments
+   ```swift
+   private func handleAppEnteredBackground() {
+       // Send any pending message acks
+       flushPendingAcks()
+       disconnect()
+   }
+   ```
+
+4. **Consider adding "connection intent" to protocol** (optional): Server could distinguish intentional disconnect from suspension
+   ```json
+   Client → Backend: {"type": "disconnect", "reason": "background"}
+   ```
+   This lets server skip buffering messages for clients that explicitly disconnected.
+
+**Priority**: Medium - Current behavior works but wastes server resources maintaining connections to suspended clients, and could lose in-flight responses when user backgrounds during a prompt.
+
+<!-- Add findings for item 10 here -->
 
 ### Protocol Design
 
