@@ -7,7 +7,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Category | Reviewed | Gaps Found | Recommendations |
 |----------|----------|------------|-----------------|
 | Connection Management | 3/3 | 1 | 1 |
-| Message Delivery | 0/2 | - | - |
+| Message Delivery | 1/2 | 2 | 2 |
 | Authentication | 0/2 | - | - |
 | Mobile-Specific | 0/3 | - | - |
 | Protocol Design | 0/3 | - | - |
@@ -132,7 +132,55 @@ The iOS client implements heartbeat/ping-pong with all recommended features:
 
 ### Message Delivery
 
-<!-- Add findings for items 4-5 here -->
+#### 4. Message acknowledgment system
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1280-1287` - `sendMessageAck()` method sends ack for replayed messages
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:599-612` - Handles `replay` message type and sends ack
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:50` - `onReplayReceived` callback for replay messages
+- `backend/src/voice_code/server.clj:440-442` - `generate-message-id` function (defined but unused)
+- `backend/src/voice_code/server.clj:1380-1382` - `message-ack` handler (logs but takes no action)
+- `STANDARDS.md:116-141` - Protocol specification for message acknowledgment
+- `ios/VoiceCodeTests/VoiceCodeClientTests.swift:308-355` - Tests for replay handling and ack structure
+
+**Findings**:
+The protocol specification in STANDARDS.md defines a complete message acknowledgment system, but the **implementation is incomplete**:
+
+**What's implemented:**
+1. **Protocol definition**: STANDARDS.md specifies unique message IDs, buffering, replay on reconnection, and client acks
+2. **iOS ack sending**: Client sends `message_ack` when it receives a `replay` message (lines 609-611)
+3. **Message ID generation**: Backend has `generate-message-id` function that creates UUIDs
+4. **Backend ack handler**: Server handles `message-ack` messages but only logs them (no action taken)
+
+**What's NOT implemented:**
+1. **No undelivered message queue**: Backend has no data structure to buffer messages pending acknowledgment
+2. **Response messages lack message_id**: `send-to-client!` doesn't include `message_id` field
+3. **No replay on reconnection**: Backend doesn't replay unacknowledged messages after client reconnects
+4. **No persistence**: Even if buffering existed, it wouldn't survive backend restart
+5. **Ack has no effect**: The `message-ack` handler only logs - it doesn't remove messages from any queue
+
+**Best practice requirements:**
+- Assign unique IDs to messages requiring delivery confirmation ❌ (IDs generated but not attached)
+- Buffer unacknowledged messages for replay on reconnection ❌ (no buffering implemented)
+- Client sends `ack` when message is processed ✅ (implemented for replay messages)
+
+**Gaps**:
+1. Backend doesn't attach `message_id` to response messages
+2. No undelivered message queue/buffer exists
+3. No replay of unacknowledged messages on reconnection
+4. Ack handler is a no-op (doesn't update any state)
+
+**Recommendations**:
+1. **Add undelivered queue per client**: Store messages with IDs until acked
+   ```clojure
+   ;; In connected-clients atom, add :undelivered-messages map
+   {:authenticated true, :undelivered-messages {"msg-id" {...}}}
+   ```
+2. **Include message_id in responses**: Modify `send-to-client!` to generate and attach message IDs to response types that need acknowledgment
+3. **Implement replay on reconnection**: After `connect` succeeds, replay all undelivered messages for that iOS session
+4. **Make ack handler remove from queue**: Update `message-ack` handler to remove acknowledged message from undelivered queue
+
+<!-- Add findings for item 5 here -->
 
 ### Authentication
 
@@ -190,7 +238,14 @@ The iOS client implements heartbeat/ping-pong with all recommended features:
 
 ### Medium Priority
 
-<!-- Add medium priority recommendations here -->
+**Message Acknowledgment System** (Item 4)
+- Implement undelivered message queue per iOS session in backend
+- Attach `message_id` to response messages that require acknowledgment
+- Replay unacknowledged messages on client reconnection
+- Make `message-ack` handler remove messages from queue
+- See [Message acknowledgment findings](#4-message-acknowledgment-system) for full details
+
+<!-- Add additional medium priority recommendations here -->
 
 ### Low Priority / Nice to Have
 
