@@ -9,7 +9,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Connection Management | 3/3 | 1 | 1 |
 | Message Delivery | 2/2 | 2 | 2 |
 | Authentication | 2/2 | 0 | 0 |
-| Mobile-Specific | 2/3 | 4 | 4 |
+| Mobile-Specific | 3/3 | 8 | 8 |
 | Protocol Design | 3/3 | 3 | 3 |
 | Detecting Degraded Connections | 0/3 | - | - |
 | Poor Bandwidth Handling | 0/4 | - | - |
@@ -497,7 +497,110 @@ The implementation has **partial app lifecycle handling** with foreground reconn
 
 **Priority**: Medium - Current behavior works but wastes server resources maintaining connections to suspended clients, and could lose in-flight responses when user backgrounds during a prompt.
 
-<!-- Add findings for item 10 here -->
+#### 10. Optimize for battery
+**Status**: Partial
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:36` - `pingInterval = 30.0` (30 second ping interval)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:389-433` - Exponential backoff with jitter prevents rapid reconnection
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:150-172` - Debounce mechanism batches rapid updates
+- `ios/VoiceCode/Managers/NotificationManager.swift` - Local notifications only, no push notifications
+- `ios/VoiceCodeTests/VoiceCodeClientDebounceTests.swift` - Tests for debouncing behavior
+
+**Findings**:
+The implementation has **partial battery optimization** with reasonable ping intervals and debouncing, but lacks push notifications and has room for improvement in reconnection behavior.
+
+**What's implemented:**
+
+1. **Reasonable ping interval** ✅
+   - 30 second ping interval (within recommended 30-60 second range)
+   - Ping timer only active when connected AND authenticated
+   - Timer stops on disconnect, preventing unnecessary network activity
+   - Not aggressive polling - single lightweight JSON message
+
+2. **Exponential backoff with jitter** ✅
+   - Reconnection delays increase exponentially: 1s → 2s → 4s → ... → 30s (capped)
+   - ±25% jitter prevents thundering herd when multiple devices reconnect
+   - Prevents battery drain from rapid reconnection attempts
+   - Max 20 attempts (~17 minutes total) before stopping completely
+
+3. **UI update debouncing** ✅
+   - 100ms debounce window for rapid incoming messages
+   - Batches multiple `session_locked`, `command_output`, etc. into single UI update
+   - Reduces CPU usage and SwiftUI re-renders
+   - `VoiceCodeClientDebounceTests` verifies batching behavior
+
+4. **No aggressive polling** ✅
+   - No polling loops for status checks
+   - Server pushes updates via WebSocket when data changes
+   - Client reacts to events, doesn't poll for them
+
+**What's NOT implemented:**
+
+1. **No push notifications for waking app** ❌
+   - `NotificationManager` uses local notifications only (for Claude responses)
+   - No Apple Push Notification service (APNs) integration
+   - When app is backgrounded/suspended, WebSocket dies with no recovery mechanism
+   - User must manually open app to receive updates
+   - This is a deliberate design choice (single-user deployment, no push server infrastructure)
+
+2. **No network-aware reconnection** ❌
+   - Reconnection timer fires regardless of network availability (see Item 2)
+   - Continues retrying on unreachable network, wasting battery
+   - Should pause timer when network unavailable
+
+3. **No batch message sending** ⚠️
+   - On reconnection, sends individual `subscribe` messages for each active session
+   - Could batch multiple subscriptions into single request (see Item 23)
+   - Impact is minimal for typical use (1-2 active sessions)
+
+4. **No disconnect on background** ⚠️
+   - WebSocket remains open when app enters background (see Item 9)
+   - iOS may suspend app with connection in undefined state
+   - Clean disconnect would release network resources and save battery
+   - However, keeping connection open allows receiving responses to in-flight prompts
+
+**Best practice requirements:**
+- Avoid aggressive polling or short ping intervals ✅ (30s ping, no polling)
+- Use system push notifications for waking app when possible ❌ (local notifications only, by design)
+- Batch non-urgent messages ⚠️ (incoming batched via debounce, outgoing not batched)
+
+**Gaps**:
+1. Reconnection timer fires during network unavailability (wasted CPU/radio)
+2. No APNs integration for background wake (acceptable given architecture)
+3. WebSocket kept open during background (could disconnect to save resources)
+4. No batch protocol for outgoing messages (low impact)
+
+**Recommendations**:
+
+1. **Add network-aware reconnection** (see Item 2 for full details):
+   - Add `NWPathMonitor` to detect network state
+   - Pause reconnection timer when network unavailable
+   - Resume/trigger immediately when network becomes available
+   - This is the single biggest battery optimization opportunity
+
+2. **Disconnect WebSocket on background** (see Item 9 for full details):
+   - Clean disconnect when entering background releases network resources
+   - iOS can suspend app without orphaned TCP connection
+   - Reduces server resource usage as well
+   ```swift
+   private func handleAppEnteredBackground() {
+       logger.info("📱 [VoiceCodeClient] Entering background, disconnecting")
+       disconnect()  // Clean close with .goingAway
+   }
+   ```
+
+3. **Document push notification non-goal**: Add to README/STANDARDS that push notifications are intentionally not implemented because:
+   - Single-user self-hosted architecture
+   - Would require push notification server infrastructure
+   - APNs certificates and backend integration
+   - Local notifications provide "Read Aloud" for foreground responses
+
+4. **Consider batch subscribe protocol** (low priority):
+   - If users commonly have many active sessions, implement `subscribe_batch`
+   - Reduces reconnection burst from N messages to 1
+   - See Item 23 for protocol design
+
+**Priority**: Medium - Network-aware reconnection (Recommendation 1) should be implemented as it addresses the biggest battery drain scenario (reconnecting during network outage). Background disconnect (Recommendation 2) provides incremental improvement. Push notifications (not recommended) would require significant infrastructure changes for marginal benefit.
 
 ### Protocol Design
 
