@@ -10,7 +10,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Message Delivery | 2/2 | 2 | 2 |
 | Authentication | 2/2 | 0 | 0 |
 | Mobile-Specific | 0/3 | - | - |
-| Protocol Design | 0/3 | - | - |
+| Protocol Design | 1/3 | 0 | 0 |
 | Detecting Degraded Connections | 0/3 | - | - |
 | Poor Bandwidth Handling | 0/4 | - | - |
 | Intermittent Signal Handling | 0/4 | - | - |
@@ -309,7 +309,51 @@ The implementation fully supports credential persistence across reconnections wi
 
 ### Protocol Design
 
-<!-- Add findings for items 11-13 here -->
+#### 11. Typed messages with clear structure
+**Status**: Implemented
+**Locations**:
+- `backend/src/voice_code/server.clj:23-47` - `snake->kebab`, `kebab->snake`, `convert-keywords`, `parse-json`, `generate-json` - automatic case conversion
+- `backend/src/voice_code/server.clj:1954-1962` - `websocket-handler` sends `hello` message with version fields
+- `backend/src/voice_code/server.clj:1037-1900` - `handle-message` dispatches on `:type` field using `case`
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:530-534` - iOS validates `type` field presence
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:538-950` - iOS message handler switches on `type` string
+- `STANDARDS.md:66-474` - Protocol specification documents all message types
+
+**Findings**:
+The implementation fully meets this best practice across all three dimensions:
+
+1. **Include `type` field in all messages** ✅
+   - Every message includes a `type` field (e.g., `"type": "connect"`, `"type": "prompt"`)
+   - Backend dispatches on `(:type data)` using Clojure's `case` statement
+   - iOS validates `type` presence before processing: `guard let type = json["type"] as? String`
+   - Unknown types are rejected with error: `"Unknown message type: <type>"`
+
+2. **Consistent naming conventions (snake_case for JSON)** ✅
+   - Backend automatically converts between conventions at JSON boundaries:
+     - `parse-json`: snake_case → kebab-case (e.g., `session_id` → `:session-id`)
+     - `generate-json`: kebab-case → snake_case (e.g., `:session-id` → `session_id`)
+   - iOS uses snake_case in all JSON messages (per Swift/JSON convention)
+   - STANDARDS.md explicitly documents the convention: "Use **snake_case** for all JSON keys"
+
+3. **Version protocol for future compatibility** ✅
+   - Backend sends `hello` message on connection with version info:
+     ```json
+     {"type": "hello", "version": "0.2.0", "auth_version": 1, ...}
+     ```
+   - `version`: Overall protocol version (semantic versioning)
+   - `auth_version`: Authentication protocol version for forward compatibility
+   - iOS checks `auth_version` and warns if server requires newer version (lines 544-550)
+   - Future protocol changes can increment `auth_version` to signal incompatibility
+
+**Message Type Inventory** (from STANDARDS.md and code):
+- Client → Backend: `connect`, `ping`, `prompt`, `subscribe`, `unsubscribe`, `set_directory`, `set_max_message_size`, `message_ack`, `compact_session`, `kill_session`, `infer_session_name`, `execute_command`, `get_command_history`, `get_command_output`, `upload_file`, `list_resources`, `delete_resource`, `start_recipe`, `exit_recipe`, `get_available_recipes`, `create_worktree_session`, `session_deleted`
+- Backend → Client: `hello`, `connected`, `pong`, `ack`, `response`, `error`, `auth_error`, `session_locked`, `turn_complete`, `replay`, `session_history`, `session_list`, `recent_sessions`, `session_updated`, `session_ready`, `session_name_inferred`, `available_commands`, `command_started`, `command_output`, `command_complete`, `command_error`, `command_history`, `command_output_full`, `compaction_complete`, `compaction_error`, `file_uploaded`, `resources_list`, `resource_deleted`, `recipe_started`, `recipe_exited`, `recipe_step_complete`, `available_recipes`, `worktree_session_created`, `worktree_session_error`, `infer_name_error`, `session_killed`
+
+**Gaps**: None identified.
+
+**Recommendations**: None - implementation fully meets best practice.
+
+<!-- Add findings for items 12-13 here -->
 
 ### Detecting Degraded Connections
 
