@@ -13,7 +13,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Protocol Design | 3/3 | 3 | 3 |
 | Detecting Degraded Connections | 0/3 | - | - |
 | Poor Bandwidth Handling | 0/4 | - | - |
-| Intermittent Signal Handling | 2/4 | 8 | 8 |
+| Intermittent Signal Handling | 3/4 | 12 | 12 |
 | App Lifecycle Resilience | 0/4 | - | - |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 1/3 | 4 | 4 |
@@ -825,7 +825,122 @@ The implementation has **optimistic UI** but lacks **rollback** on server reject
    }
    ```
 
-<!-- Add findings for items 23-24 here -->
+#### 23. Use request coalescing
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:574-598` - Subscription restoration loop sends individual messages
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1525-1546` - `sendMessage()` sends immediately without queueing
+- `ios/VoiceCodeTests/VoiceCodeClientDebounceTests.swift:1-256` - Debounce tests (incoming updates, not outgoing requests)
+
+**Findings**:
+The implementation does **not** implement request coalescing. On reconnection, outgoing messages are sent individually rather than batched, and there's no deduplication of redundant requests.
+
+**What request coalescing addresses:**
+Request coalescing is a client-side optimization that:
+1. **Batches multiple pending requests** into a single message when possible
+2. **Deduplicates redundant requests** (e.g., multiple status checks for the same resource)
+3. **Reduces reconnection burst load** on the server
+
+**Current behavior:**
+
+1. **Individual message sending** ❌
+   - `sendMessage()` sends each message immediately via WebSocket
+   - No outgoing message queue or batching mechanism
+   - On reconnection, subscription restoration sends N individual `subscribe` messages (line 578-598):
+     ```swift
+     for sessionId in self.activeSubscriptions {
+         // Sends individual subscribe message for each session
+         sendMessage(message)
+     }
+     ```
+
+2. **No request deduplication** ❌
+   - Multiple calls to `subscribe(sessionId:)` for the same session send duplicate messages
+   - Multiple `ping` calls are sent individually (though this is appropriate for pings)
+   - No tracking of "in-flight" requests to avoid duplicates
+
+3. **No batching protocol** ❌
+   - Protocol doesn't support batch operations (e.g., `subscribe_batch` for multiple sessions)
+   - Each operation requires its own message round-trip
+
+**Impact:**
+- **Reconnection burst**: When client reconnects with N active subscriptions, it sends N+1 messages in rapid succession (`connect` + N `subscribe` messages)
+- **Server load**: Backend processes N separate subscription requests instead of one batch
+- **Potential race conditions**: Rapid individual messages could interleave with server responses
+
+**What IS implemented (related but different):**
+
+1. **UI update debouncing** (incoming, not outgoing) ✅
+   - `VoiceCodeClientDebounceTests` tests debouncing of incoming server messages
+   - Multiple rapid `session_locked` messages batch into single UI update
+   - This optimizes UI rendering, not network requests
+
+2. **Delta sync** (reduces payload size, not request count) ✅
+   - Subscription includes `last_message_id` for incremental sync
+   - Reduces response payload, but doesn't reduce number of requests
+
+**Best practice requirements:**
+- Batch multiple pending requests into single message ❌ (each request sent individually)
+- Deduplicate redundant requests ❌ (no deduplication mechanism)
+- Reduce reconnection burst load ❌ (N subscriptions = N messages)
+
+**Gaps**:
+1. No outgoing message queue for batching
+2. No protocol support for batch subscribe operations
+3. No request deduplication before sending
+4. Reconnection sends burst of individual messages
+
+**Recommendations**:
+1. **Add batch subscribe protocol message** (backend + iOS):
+   ```json
+   Client → Backend: {
+     "type": "subscribe_batch",
+     "sessions": [
+       {"session_id": "uuid-1", "last_message_id": "msg-uuid-1"},
+       {"session_id": "uuid-2", "last_message_id": "msg-uuid-2"}
+     ]
+   }
+   ```
+   Backend responds with single `session_history_batch` containing all sessions.
+
+2. **Coalesce subscriptions on reconnection**:
+   ```swift
+   // Instead of individual messages:
+   if !self.activeSubscriptions.isEmpty {
+       let sessions = activeSubscriptions.map { sessionId in
+           ["session_id": sessionId, "last_message_id": getNewestCachedMessageId(sessionId: sessionId)]
+       }
+       sendMessage([
+           "type": "subscribe_batch",
+           "sessions": sessions
+       ])
+   }
+   ```
+
+3. **Add request deduplication** (optional, for high-frequency operations):
+   ```swift
+   private var pendingRequests = Set<String>()  // Track in-flight request keys
+
+   func subscribe(sessionId: String) {
+       let requestKey = "subscribe:\(sessionId)"
+       guard !pendingRequests.contains(requestKey) else {
+           print("Skipping duplicate subscribe request for \(sessionId)")
+           return
+       }
+       pendingRequests.insert(requestKey)
+       // ... send message, remove from set on response
+   }
+   ```
+
+4. **Consider outgoing message queue** (for offline-first support from Item 21):
+   If implementing offline prompt queueing, the queue could also coalesce and deduplicate requests before sending.
+
+**Priority**: Low - Current behavior works correctly, just less efficiently. The typical case is 0-2 active subscriptions, so reconnection burst is minimal. Consider implementing if:
+- Users frequently have many active sessions
+- Server observability shows reconnection spikes causing issues
+- Implementing offline queueing (Item 21) which would naturally include batching
+
+<!-- Add findings for item 24 here -->
 
 ### App Lifecycle Resilience
 
