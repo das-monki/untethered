@@ -18,7 +18,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
 | Observability | 3/3 | 16 | 16 |
-| Edge Cases | 1/3 | 2 | 2 |
+| Edge Cases | 2/3 | 7 | 6 |
 
 ## Findings
 
@@ -3511,7 +3511,73 @@ The implementation **partially** follows this best practice:
    }
    ```
 
-<!-- Add findings for items 39-40 here -->
+#### 39. Protect against replay attacks
+**Status**: Not Implemented
+**Locations**:
+- `backend/src/voice_code/auth.clj:26-34` - `generate-api-key` generates static 128-bit key
+- `backend/src/voice_code/auth.clj:95-110` - `constant-time-equals?` compares keys securely (prevents timing attacks)
+- `backend/src/voice_code/server.clj:403-425` - `authenticate-connect!` validates API key with no timestamp/nonce
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1258-1261` - Connect message sends only `type`, `api_key`, `session_id`
+- `ios/VoiceCode/Managers/AppSettings.swift:82-86` - `fullServerURL` constructs `ws://` URLs (not `wss://`)
+- `STANDARDS.md:93-105` - Protocol spec defines connect message with no anti-replay fields
+
+**Findings**:
+The current implementation does **not** protect against replay attacks:
+
+1. **Static pre-shared key**: Authentication uses a single static API key (`untethered-<32 hex chars>`) that never changes during the session lifetime. Once captured, this key can be used indefinitely.
+
+2. **No nonce or timestamp**: The connect message contains only:
+   - `type`: "connect"
+   - `session_id`: iOS session UUID (optional)
+   - `api_key`: The static key
+
+   There is no nonce, timestamp, or challenge-response mechanism to prevent credential reuse.
+
+3. **No stale credential rejection**: The backend performs simple key comparison with no time-based validation. A captured connect message can be replayed hours or days later.
+
+4. **Unencrypted transport**: The production configuration uses `ws://` (WebSocket over HTTP), not `wss://` (WebSocket over TLS). The API key is transmitted in plaintext over the local network, making interception trivial for an attacker on the same network.
+
+5. **Mitigating factors**:
+   - The backend uses constant-time comparison to prevent timing attacks
+   - The system is designed for local network use (developer machine to iOS device on same LAN)
+   - Key has 128 bits of entropy (strong against brute force)
+
+**Threat scenarios without replay protection**:
+- **Network eavesdropping**: Attacker on same WiFi network captures plaintext connect message, replays to gain session control
+- **Man-in-the-middle**: Attacker intercepts connection, captures API key, connects separately to backend
+- **Session hijacking**: Captured credentials allow sending prompts to user's Claude sessions
+
+**Gaps**:
+1. **No transport encryption**: `ws://` used instead of `wss://` - API key transmitted in plaintext
+2. **No nonce in connect message**: Same connect message can be replayed indefinitely
+3. **No timestamp validation**: Backend doesn't reject stale authentication attempts
+4. **No challenge-response**: No server-side challenge to prevent credential capture and reuse
+5. **No session binding**: Once authenticated, no mechanism to verify subsequent messages came from same client
+
+**Recommendations**:
+1. **Enable TLS (High Priority)**: Switch from `ws://` to `wss://` to encrypt all traffic. This is the single most impactful change. Even without nonces, TLS prevents eavesdropping and passive replay attacks. The backend would need TLS certificate configuration.
+
+2. **Add challenge-response authentication (Medium Priority)**:
+   - Server sends random `challenge` in hello message
+   - Client computes `response = HMAC-SHA256(api_key, challenge)`
+   - Client sends `response` in connect message instead of raw `api_key`
+   - Server verifies HMAC matches expected value
+   - Challenge is single-use, preventing replay of captured responses
+
+3. **Add timestamp with bounded validity (Low Priority with TLS)**:
+   - Client includes `timestamp` in connect message
+   - Server rejects if timestamp differs from server time by more than 30 seconds
+   - Limits replay window to 30 seconds (requires approximate clock sync)
+
+4. **Implement nonce tracking (Low Priority with TLS)**:
+   - Server maintains set of recently-used nonces (last 5 minutes)
+   - Client includes random `nonce` in connect message
+   - Server rejects if nonce was already used
+   - Completely prevents replay within tracking window
+
+Note: For a local-network developer tool, TLS alone may be sufficient. Challenge-response adds significant complexity but provides stronger guarantees for security-sensitive deployments.
+
+<!-- Add findings for item 40 here -->
 
 ## Recommended Actions
 
