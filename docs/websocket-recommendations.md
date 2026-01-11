@@ -14,7 +14,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Detecting Degraded Connections | 3/3 | 16 | 15 |
 | Poor Bandwidth Handling | 2/4 | 10 | 7 |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
-| App Lifecycle Resilience | 3/4 | 14 | 11 |
+| App Lifecycle Resilience | 4/4 | 19 | 14 |
 | Network Transition Handling | 1/3 | 1 | 1 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
 | Observability | 3/3 | 16 | 16 |
@@ -2422,6 +2422,135 @@ The implementation has **partial** graceful degradation with good foreground res
 - Free server resources faster
 - Provide cleaner disconnect semantics
 - Enable server-side handling of "graceful" vs "abrupt" disconnections
+
+#### 28. Request background execution time for cleanup
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:146-148` - `handleAppEnteredBackground()` is an empty stub (only logs)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:20` - `lockedSessions` tracks in-flight prompt operations
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:599-612` - `sendMessageAck()` sends acks for replay messages
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:1280-1287` - `sendMessageAck()` method implementation
+
+**Findings**:
+The implementation does **not** use `UIApplication.beginBackgroundTask` to request extra execution time when the app enters background. The best practice recommends:
+1. Use `beginBackgroundTask` to complete in-flight operations
+2. Send pending acks before suspension
+3. Persist any unsynced state
+
+**Current behavior:**
+1. **No background task request**: `handleAppEnteredBackground()` only logs and does nothing else:
+   ```swift
+   private func handleAppEnteredBackground() {
+       print("📱 [VoiceCodeClient] App entering background")
+   }
+   ```
+
+2. **In-flight operations abandoned**: The `lockedSessions` set tracks Claude sessions currently processing prompts. When the app backgrounds:
+   - These operations continue on the server
+   - The response arrives while app is suspended
+   - WebSocket connection eventually times out
+   - Response may be lost or delayed until reconnection
+
+3. **No pending ack handling**: When replay messages are received, `sendMessageAck()` is called immediately. However, if the app backgrounds between receiving a replay message and completing its processing, the ack may not be sent.
+
+4. **State persistence is partial**: CoreData persists messages, but `lockedSessions` and `activeSubscriptions` are in-memory only and lost on termination.
+
+**Scenarios where background task would help:**
+
+1. **User sends prompt and immediately backgrounds**:
+   - Current: WebSocket suspended, response lost until foreground
+   - With background task: Extra ~30s to receive response before suspension
+
+2. **Receiving replay messages during reconnection**:
+   - Current: If user backgrounds during replay, acks may not send
+   - With background task: Complete ack sends before suspension
+
+3. **Graceful WebSocket close**:
+   - Current: WebSocket left open, times out ungracefully
+   - With background task: Send close frame, update state, then suspend
+
+**Gaps**:
+1. No `UIApplication.beginBackgroundTask` usage anywhere in codebase
+2. `handleAppEnteredBackground()` is a no-op (only logs)
+3. In-flight operations (`lockedSessions`) not completed before suspension
+4. No mechanism to send pending acks before suspension
+5. No persistence of `lockedSessions` or `activeSubscriptions` for recovery
+
+**Recommendations**:
+1. **Request background execution time on background entry**:
+   ```swift
+   private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+
+   private func handleAppEnteredBackground() {
+       print("📱 [VoiceCodeClient] App entering background")
+
+       #if os(iOS)
+       // Request time to complete critical work
+       backgroundTaskID = UIApplication.shared.beginBackgroundTask { [weak self] in
+           // Expiration handler - clean up and end task
+           self?.completeBackgroundCleanup()
+       }
+
+       // Perform cleanup with time budget
+       performBackgroundCleanup()
+       #endif
+   }
+
+   private func performBackgroundCleanup() {
+       // 1. If no in-flight operations, close immediately
+       guard !lockedSessions.isEmpty else {
+           completeBackgroundCleanup()
+           return
+       }
+
+       // 2. Wait briefly for in-flight operations to complete
+       // Set timeout shorter than background task expiration (~30s)
+       DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+           self?.completeBackgroundCleanup()
+       }
+   }
+
+   private func completeBackgroundCleanup() {
+       // Close WebSocket cleanly
+       stopPingTimer()
+       reconnectionTimer?.cancel()
+       reconnectionTimer = nil
+       webSocket?.cancel(with: .goingAway, reason: "App backgrounded".data(using: .utf8))
+       webSocket = nil
+
+       DispatchQueue.main.async { [weak self] in
+           self?.isConnected = false
+       }
+
+       // End background task
+       #if os(iOS)
+       if backgroundTaskID != .invalid {
+           UIApplication.shared.endBackgroundTask(backgroundTaskID)
+           backgroundTaskID = .invalid
+       }
+       #endif
+   }
+   ```
+
+2. **Persist critical state before suspension**:
+   ```swift
+   private func persistStateForBackground() {
+       // Save activeSubscriptions to UserDefaults
+       UserDefaults.standard.set(Array(activeSubscriptions), forKey: "activeSubscriptions")
+
+       // Optionally save lockedSessions for UI recovery
+       UserDefaults.standard.set(Array(lockedSessions), forKey: "lockedSessions")
+   }
+   ```
+
+3. **Add timeout for in-flight operations**: Rather than waiting indefinitely, set a reasonable timeout (5-10s) to receive responses for in-flight prompts before closing the connection.
+
+**Priority**: Medium-High - This affects the user experience when backgrounding the app during active Claude interactions. Without background task:
+- Responses to prompts sent just before backgrounding may be delayed
+- WebSocket closes ungracefully (server sees disconnect, not intentional close)
+- No opportunity to send pending acks or persist state
+
+The implementation is straightforward and provides meaningful improvement for a common mobile usage pattern (user sends prompt, switches to another app while waiting).
 
 ### Network Transition Handling
 
