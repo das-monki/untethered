@@ -18,7 +18,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Network Transition Handling | 2/3 | 8 | 8 |
 | Server-Side Resilience | 3/3 | 8 | 9 |
 | Observability | 3/3 | 16 | 16 |
-| Edge Cases | 2/3 | 7 | 6 |
+| Edge Cases | 3/3 | 13 | 11 |
 
 ## Findings
 
@@ -3787,7 +3787,125 @@ The current implementation does **not** protect against replay attacks:
 
 Note: For a local-network developer tool, TLS alone may be sufficient. Challenge-response adds significant complexity but provides stronger guarantees for security-sensitive deployments.
 
-<!-- Add findings for item 40 here -->
+#### 40. Handle message corruption
+**Status**: Partial
+**Locations**:
+- `backend/src/voice_code/server.clj:44-47` - `parse-json` function uses Cheshire for JSON parsing
+- `backend/src/voice_code/server.clj:1828-1831` - `handle-message` outer try-catch catches all exceptions including parse errors
+- `backend/src/voice_code/server.clj:1043` - Type field extraction with no explicit validation
+- `backend/src/voice_code/server.clj:1820-1826` - Unknown message type returns error
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:517-534` - `handleMessage()` validates UTF-8, JSON parsing, and type field
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:536-1000+` - Switch statement handling message types
+
+**Findings**:
+The implementation **partially** follows this best practice with both platforms handling parse errors gracefully without crashing, but with gaps in validation completeness and logging consistency:
+
+**Backend (Clojure):**
+
+1. **JSON parsing error handling** ✅
+   - All message handling is wrapped in a try-catch block (`handle-message` lines 1828-1831)
+   - JSON parse errors from Cheshire are caught along with all other exceptions
+   - Server sends error response: `{"type": "error", "message": "Error processing message: <exception message>"}`
+   - Server does not crash on malformed JSON
+
+2. **Error logging** ⚠️
+   - Parse errors are logged via `log/error` with exception stack trace
+   - Gap: Only logs the exception message, not the actual malformed JSON content that caused the failure
+   - Makes debugging difficult when clients send invalid payloads
+
+3. **Type field validation** ⚠️
+   - No explicit validation that `type` field exists before routing
+   - If `type` is missing, `(:type data)` returns `nil`
+   - `nil` type falls through to default handler which sends "Unknown message type" error
+   - Works but no explicit log entry for "missing type field"
+
+4. **Per-message field validation** ⚠️
+   - Each message type has ad-hoc field validation (e.g., `session_id required in subscribe message`)
+   - No centralized schema validation
+   - Validation is inconsistent across message types
+
+**iOS (Swift):**
+
+1. **JSON parsing error handling** ✅
+   - `handleMessage()` validates JSON parsing explicitly (line 524-528)
+   - Uses `try?` with `JSONSerialization` - failures return early without crashing
+   - Logs error with first 200 characters of the malformed message
+
+2. **Type field validation** ✅
+   - Explicitly checks for `type` field (lines 530-534)
+   - Logs "Message missing 'type' field" with list of keys present
+   - Returns early if type missing
+
+3. **UTF-8 validation** ✅
+   - Validates UTF-8 encoding before JSON parsing (lines 518-522)
+   - Logs error if conversion fails
+
+4. **Silent failures in field extraction** ⚠️
+   - Many message types use optional chaining (`if let`) for field extraction
+   - When optional extraction fails, message is silently ignored
+   - Example: `replay` message with missing `text` field is ignored without logging
+   - Inconsistent: some validation logs, some doesn't
+
+5. **Unknown message types** ⚠️
+   - Switch statement has no `default` case
+   - Unknown message types are silently ignored
+   - No logging when unrecognized message type received
+
+**Gaps**:
+1. **Backend: No malformed JSON logging** - When parse fails, the actual invalid JSON content is not logged, making debugging difficult
+2. **Backend: No explicit type field check** - Missing `type` falls through to default handler silently
+3. **iOS: Silent field extraction failures** - Optional extraction failures don't log what field was missing
+4. **iOS: No default case** - Unknown message types are silently ignored
+5. **Both: No schema validation** - Each message type has ad-hoc validation instead of centralized schema enforcement
+6. **Both: No malformed message metrics** - No counters for how often invalid messages are received
+
+**Recommendations**:
+1. **Add detailed parse error logging to backend**:
+   ```clojure
+   (defn parse-json-safely
+     "Parse JSON with detailed error logging"
+     [s]
+     (try
+       (json/parse-string s snake->kebab)
+       (catch Exception e
+         (log/warn "Malformed JSON received:" (subs s 0 (min 500 (count s))))
+         (throw e))))
+   ```
+
+2. **Add explicit type field validation to backend**:
+   ```clojure
+   (let [data (parse-json msg)
+         msg-type (:type data)]
+     (when-not msg-type
+       (log/warn "Message missing type field:" (keys data))
+       (send-error! channel "Message must have a 'type' field"))
+     ;; ... continue processing
+   ```
+
+3. **Add default case to iOS switch statement**:
+   ```swift
+   default:
+       logger.warning("⚠️ [VoiceCodeClient] Unknown message type: \(type)")
+       LogManager.shared.log("Unknown message type: \(type)", category: "VoiceCodeClient")
+   ```
+
+4. **Add consistent field extraction logging to iOS**:
+   ```swift
+   case "replay":
+       guard let messageData = json["message"] as? [String: Any] else {
+           logger.warning("⚠️ [VoiceCodeClient] replay message missing 'message' field")
+           return
+       }
+       guard let text = messageData["text"] as? String else {
+           logger.warning("⚠️ [VoiceCodeClient] replay message missing 'text' field")
+           return
+       }
+       // ... continue processing
+   ```
+
+5. **Consider JSON schema validation (optional)**: For critical message types, add schema validation to ensure all required fields are present with correct types before processing.
+
+**Priority**: Low - Current implementation prevents crashes and handles errors gracefully. The gaps are primarily around debugging ergonomics (knowing what went wrong) rather than stability. Unknown message types being silently ignored is the most impactful gap for protocol evolution.
 
 ## Recommended Actions
 
