@@ -6,7 +6,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 
 | Category | Reviewed | Gaps Found | Recommendations |
 |----------|----------|------------|-----------------|
-| Connection Management | 1/3 | 0 | 0 |
+| Connection Management | 2/3 | 1 | 1 |
 | Message Delivery | 0/2 | - | - |
 | Authentication | 0/2 | - | - |
 | Mobile-Specific | 0/3 | - | - |
@@ -61,6 +61,38 @@ The iOS client implements robust reconnection logic with all recommended feature
 
 **Recommendations**: None - implementation fully meets best practice.
 
+#### 2. Network transition handling (reachability)
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:93-131` - `setupLifecycleObservers()` - handles app lifecycle but not network changes
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:389-433` - `setupReconnection()` - timer-based reconnection without reachability awareness
+
+**Findings**:
+The iOS client does **not** implement network reachability monitoring. The codebase has no imports of the `Network` framework, no usage of `NWPathMonitor`, and no SCNetworkReachability APIs.
+
+Current behavior:
+1. **App lifecycle handling**: The client correctly reconnects on foreground (`willEnterForegroundNotification` on iOS, `didBecomeActiveNotification` on macOS)
+2. **Timer-based reconnection**: Uses exponential backoff timer that fires regardless of network state
+3. **No proactive reconnection**: When network becomes available after being offline, the client waits for the next timer tick rather than reconnecting immediately
+4. **No reachability check**: The reconnection timer continues firing even when the network is unreachable, wasting CPU cycles and battery
+
+What the best practice recommends:
+- Listen for reachability/network status changes (NWPathMonitor on iOS)
+- Reconnect proactively when network becomes available (immediate, not waiting for timer)
+- Don't retry when network is unreachable (pause timer, save battery)
+
+**Gaps**:
+1. No `NWPathMonitor` to detect network state changes
+2. Reconnection timer fires blindly regardless of network availability
+3. No immediate reconnection when network becomes available
+4. No pausing of reconnection attempts when network is unreachable
+
+**Recommendations**:
+1. Add `NWPathMonitor` to monitor network status changes
+2. On network available: immediately attempt reconnection (reset backoff, connect)
+3. On network unavailable: pause reconnection timer (stop wasting battery)
+4. Track current network status to avoid redundant connection attempts
+
 ### Message Delivery
 
 <!-- Add findings for items 4-5 here -->
@@ -113,7 +145,11 @@ The iOS client implements robust reconnection logic with all recommended feature
 
 ### High Priority
 
-<!-- Add high priority recommendations here -->
+**Network Reachability Monitoring** (Item 2)
+- Add `NWPathMonitor` to VoiceCodeClient to detect network state changes
+- Pause reconnection timer when network is unreachable (battery savings)
+- Immediately reconnect when network becomes available (better UX)
+- See [Network Transition Handling findings](#2-network-transition-handling-reachability) for full details
 
 ### Medium Priority
 
