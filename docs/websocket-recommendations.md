@@ -11,7 +11,7 @@ This document captures findings and recommendations from reviewing our WebSocket
 | Authentication | 2/2 | 0 | 0 |
 | Mobile-Specific | 3/3 | 8 | 8 |
 | Protocol Design | 3/3 | 3 | 3 |
-| Detecting Degraded Connections | 2/3 | 10 | 10 |
+| Detecting Degraded Connections | 3/3 | 16 | 15 |
 | Poor Bandwidth Handling | 0/4 | - | - |
 | Intermittent Signal Handling | 4/4 | 16 | 16 |
 | App Lifecycle Resilience | 1/4 | 3 | 3 |
@@ -1194,7 +1194,213 @@ The best practice warns that "TCP can keep a dead connection open for minutes." 
 3. Add turn-level timeout with user-visible progress indication
 4. Standardize timeout pattern across all request-response operations
 
-<!-- Add findings for item 16 here -->
+#### 16. Distinguish slow from dead connections
+**Status**: Not Implemented
+**Locations**:
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:686-688` - `pong` handler is empty (no RTT tracking)
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:489-514` - WebSocket failure handler reconnects immediately
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:389-433` - Reconnection uses same delay strategy regardless of failure type
+- `ios/VoiceCode/Managers/VoiceCodeClient.swift:36` - Fixed 30s ping interval, not adaptive
+
+**Findings**:
+The implementation does **not** distinguish between slow and dead connections. All connection failures are treated identically - immediate reconnection attempt with exponential backoff.
+
+**Current behavior:**
+
+1. **Binary connection state** ❌
+   - Connection is either `isConnected = true` or `isConnected = false`
+   - No intermediate states for "degraded", "slow", or "unstable"
+   - UI only shows "Connected" or "Connecting..." or error
+
+2. **No RTT-based slowness detection** ❌
+   - Ping/pong exists but doesn't track timing (see item 14)
+   - Cannot differentiate between 50ms RTT (fast) and 5000ms RTT (slow but alive)
+   - No baseline to detect degradation from "normal" performance
+
+3. **No progressive timeout strategy** ❌
+   - All timeouts are fixed values (30s ping, operation-specific timeouts)
+   - No mechanism to increase timeouts when detecting slowness
+   - No escalation from "wait longer" to "reconnect"
+
+4. **No message frequency adaptation** ❌
+   - Ping interval is fixed at 30 seconds
+   - No concept of reducing message frequency on slow connections
+   - No batching or deferral of non-critical messages
+
+5. **Same reconnection strategy for all failures** ❌
+   - WebSocket error → immediate reconnect attempt
+   - Missing pong (currently not detected) → would reconnect immediately
+   - Network unreachable → same reconnect loop (wastes battery)
+   - No differentiation based on failure type or history
+
+**What the best practice recommends:**
+
+| Condition | Recommended Action |
+|-----------|-------------------|
+| Slow connection (high RTT but responsive) | Increase timeouts, reduce message frequency, show "slow connection" indicator |
+| Dead connection (no response) | Reconnect immediately |
+| Progressive detection | First increase timeout, then try again, only reconnect after multiple failures |
+
+**Why this matters:**
+
+Without distinguishing slow from dead:
+1. **False reconnections**: A slow-but-alive connection gets torn down and rebuilt, disrupting any in-flight operations
+2. **Poor UX on slow networks**: Users on 3G/congested networks experience frequent reconnections instead of graceful degradation
+3. **No user feedback**: Users can't tell if the app is slow because of network or because something is broken
+4. **Battery drain**: Repeated reconnection attempts on slow (not dead) connections waste resources
+
+**Gaps**:
+1. No RTT tracking to detect connection slowness
+2. No connection quality state machine (good → slow → dead)
+3. No progressive timeout escalation before reconnecting
+4. No adaptive ping interval based on connection quality
+5. No message frequency reduction for slow connections
+6. Reconnection strategy doesn't consider failure type
+
+**Recommendations**:
+
+1. **Implement connection quality state machine**:
+   ```swift
+   enum ConnectionState {
+       case disconnected
+       case connecting
+       case connected(quality: ConnectionQuality)
+   }
+
+   enum ConnectionQuality {
+       case good       // RTT < 500ms, stable
+       case degraded   // RTT 500ms-2000ms, or increasing trend
+       case slow       // RTT > 2000ms, or high variance
+       case unresponsive  // Pong timeout approaching
+   }
+
+   @Published var connectionState: ConnectionState = .disconnected
+   ```
+
+2. **Progressive timeout escalation before declaring dead**:
+   ```swift
+   private var consecutivePongMisses = 0
+   private let maxPongMissesBeforeReconnect = 3
+
+   // In pong timeout handler:
+   func handlePongTimeout() {
+       consecutivePongMisses += 1
+
+       if consecutivePongMisses >= maxPongMissesBeforeReconnect {
+           // Truly dead - reconnect
+           logger.warning("🔌 Connection dead after \(consecutivePongMisses) missed pongs, reconnecting")
+           forceReconnect()
+       } else {
+           // Maybe just slow - increase timeout and try again
+           let extendedTimeout = pongTimeout * Double(consecutivePongMisses + 1)
+           logger.info("⚠️ Pong miss #\(consecutivePongMisses), extending timeout to \(extendedTimeout)s")
+           connectionState = .connected(quality: .slow)
+           startPongTimeoutTimer(timeout: extendedTimeout)
+           ping()  // Try again with longer timeout
+       }
+   }
+
+   // On successful pong:
+   func handlePongReceived() {
+       consecutivePongMisses = 0  // Reset counter
+       updateConnectionQuality(basedOnRtt: measuredRtt)
+   }
+   ```
+
+3. **Adaptive behavior for slow connections**:
+   ```swift
+   func adaptToConnectionQuality(_ quality: ConnectionQuality) {
+       switch quality {
+       case .good:
+           // Normal operation
+           pingInterval = 30.0
+           enableAutoSpeak = true
+       case .degraded:
+           // Slight adjustment
+           pingInterval = 45.0  // Less frequent pings
+           // No behavior change yet
+       case .slow:
+           // Significant adaptation
+           pingInterval = 60.0
+           showSlowConnectionBanner = true
+           // Disable auto-speak to reduce message frequency
+           enableAutoSpeak = false
+       case .unresponsive:
+           // Waiting for final determination
+           showSlowConnectionBanner = true
+           // Don't send new messages, queue them instead
+       }
+   }
+   ```
+
+4. **UI indicator for connection quality**:
+   ```swift
+   // In ConnectionStatusView or header
+   var connectionIcon: some View {
+       switch connectionState {
+       case .disconnected:
+           Image(systemName: "wifi.slash")
+       case .connecting:
+           ProgressView()
+       case .connected(let quality):
+           switch quality {
+           case .good: Image(systemName: "wifi").foregroundColor(.green)
+           case .degraded: Image(systemName: "wifi").foregroundColor(.yellow)
+           case .slow: Image(systemName: "wifi.exclamationmark").foregroundColor(.orange)
+           case .unresponsive: Image(systemName: "wifi.exclamationmark").foregroundColor(.red)
+           }
+       }
+   }
+   ```
+
+5. **Different reconnection strategies by failure type**:
+   ```swift
+   enum DisconnectReason {
+       case serverClosed       // Server sent close frame
+       case pongTimeout        // Multiple pong timeouts
+       case networkError       // TCP/DNS error
+       case authFailure        // Auth rejected
+       case manual             // User-initiated
+   }
+
+   func handleDisconnection(reason: DisconnectReason) {
+       switch reason {
+       case .pongTimeout:
+           // Connection was degrading, reset backoff (likely transient)
+           reconnectionAttempts = 0
+           connect()
+       case .networkError:
+           // Network issue, use backoff
+           scheduleReconnection()
+       case .serverClosed:
+           // Server cleanly closed, reconnect soon
+           reconnectionAttempts = 0
+           DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+               self.connect()
+           }
+       case .authFailure:
+           // Don't reconnect automatically
+           requiresReauthentication = true
+       case .manual:
+           // User disconnected, don't auto-reconnect
+           break
+       }
+   }
+   ```
+
+**Priority**: Medium - This builds on items 14 (RTT tracking) and 15 (application timeouts). While not critical for basic functionality, it significantly improves UX on unreliable networks and prevents unnecessary reconnections on slow-but-alive connections.
+
+**Implementation approach**:
+1. First implement RTT tracking from item 14 (prerequisite for detecting slowness)
+2. Add connection quality enum and state machine
+3. Implement progressive pong timeout escalation
+4. Add UI indicator for connection quality
+5. Implement adaptive behavior (ping interval, message frequency)
+6. Differentiate reconnection strategies by failure type
+
+**Dependencies**:
+- Item 14 (RTT tracking) must be implemented first
+- Item 15 (application timeouts) provides operation-level context
 
 ### Poor Bandwidth Handling
 
