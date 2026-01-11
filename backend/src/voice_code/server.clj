@@ -1531,7 +1531,7 @@
                                               :details {:step "git_worktree_add"
                                                         :stderr (:stderr git-result)}})
 
-;; Step 4b: Initialize local Beads database for worktree isolation
+                            ;; Step 4b: Initialize local Beads database for worktree isolation
                             (let [bd-result (env/ensure-beads-local! worktree-path sanitized-name)]
                               (if-not (:success bd-result)
                                 (send-to-client! channel
