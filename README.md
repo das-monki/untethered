@@ -14,6 +14,8 @@ Untethered connects your iOS/macOS device to a Clojure backend that invokes Clau
 └─────────────┘                    └─────────────┘              └─────────────┘
 ```
 
+![Untethered iOS App](screenshots-combined.png)
+
 ## Features
 
 - **Voice Input** — Speak commands via iOS/macOS speech recognition
