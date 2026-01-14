@@ -287,6 +287,105 @@ final class SessionSyncManagerDeltaSyncTests: XCTestCase {
         XCTAssertTrue(true)
     }
 
+    // MARK: - Tool Result Array Content Tests
+
+    func testExtractTextFromUserMessageWithToolResultArrayContent() throws {
+        // This is the new Claude Code format where user messages with tool results
+        // have message.content as an array instead of a string
+
+        // Create message data with tool_result array content format
+        let messageData: [String: Any] = [
+            "type": "user",
+            "uuid": UUID().uuidString.lowercased(),
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "message": [
+                "role": "user",
+                "content": [
+                    [
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_test123",
+                        "content": [
+                            ["type": "text", "text": "File contents from tool result"]
+                        ]
+                    ]
+                ]
+            ],
+            "toolUseResult": [
+                ["type": "text", "text": "File contents from tool result"]
+            ]
+        ]
+
+        // Test extractText handles the new format
+        let extractedText = sessionSyncManager.extractText(from: messageData)
+
+        XCTAssertNotNil(extractedText, "Should extract text from tool_result array content")
+        XCTAssertTrue(extractedText?.contains("Result") ?? false, "Should contain tool result summary")
+    }
+
+    func testExtractTextFromUserMessageWithStringContent() throws {
+        // Original format - user messages with simple string content
+        let messageData: [String: Any] = [
+            "type": "user",
+            "uuid": UUID().uuidString.lowercased(),
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "message": [
+                "role": "user",
+                "content": "Say hello"
+            ]
+        ]
+
+        let extractedText = sessionSyncManager.extractText(from: messageData)
+
+        XCTAssertNotNil(extractedText)
+        XCTAssertEqual(extractedText, "Say hello")
+    }
+
+    func testExtractTextFromAssistantMessageWithTextBlocks() throws {
+        // Assistant messages have content as array of blocks
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "uuid": UUID().uuidString.lowercased(),
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "message": [
+                "role": "assistant",
+                "content": [
+                    ["type": "text", "text": "Hello! How can I help you?"]
+                ]
+            ]
+        ]
+
+        let extractedText = sessionSyncManager.extractText(from: messageData)
+
+        XCTAssertNotNil(extractedText)
+        XCTAssertEqual(extractedText, "Hello! How can I help you?")
+    }
+
+    func testExtractTextFromAssistantMessageWithToolUseBlock() throws {
+        // Assistant messages can have tool_use blocks with no text
+        let messageData: [String: Any] = [
+            "type": "assistant",
+            "uuid": UUID().uuidString.lowercased(),
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "message": [
+                "role": "assistant",
+                "content": [
+                    [
+                        "type": "tool_use",
+                        "id": "toolu_test123",
+                        "name": "mcp__clojure-mcp__read_file",
+                        "input": ["path": "/test/path.clj"]
+                    ]
+                ]
+            ]
+        ]
+
+        let extractedText = sessionSyncManager.extractText(from: messageData)
+
+        XCTAssertNotNil(extractedText, "Should extract text summary for tool_use block")
+        XCTAssertTrue(extractedText?.contains("🔧") ?? false, "Should contain tool emoji")
+        XCTAssertTrue(extractedText?.contains("read_file") ?? false, "Should contain tool name")
+    }
+
     // MARK: - Regression Test for Loading Bug
 
     func testDeltaSyncDoesNotDeleteExistingMessagesWhenNoNewMessages() throws {

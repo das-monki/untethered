@@ -571,9 +571,16 @@ class SessionSyncManager {
     private func summarizeToolResult(_ block: [String: Any]) -> String {
         // Check for error
         if let isError = block["is_error"] as? Bool, isError {
+            // Error content can be a string or array of text blocks
             if let content = block["content"] as? String {
                 // Extract error message (first line or first 60 chars)
                 let errorMessage = content.components(separatedBy: .newlines).first ?? content
+                let truncated = errorMessage.prefix(60)
+                return "✗ Error: \(truncated)\(errorMessage.count > 60 ? "..." : "")"
+            } else if let contentArray = block["content"] as? [[String: Any]] {
+                // Extract text from array content blocks
+                let errorText = extractTextFromContentBlocks(contentArray)
+                let errorMessage = errorText.components(separatedBy: .newlines).first ?? errorText
                 let truncated = errorMessage.prefix(60)
                 return "✗ Error: \(truncated)\(errorMessage.count > 60 ? "..." : "")"
             } else {
@@ -586,11 +593,27 @@ class SessionSyncManager {
             let size = content.utf8.count
             return "✓ Result (\(formatContentSize(size)))"
         } else if let contentArray = block["content"] as? [[String: Any]] {
-            // Some results might be structured
-            return "✓ Result (\(contentArray.count) items)"
+            // Content is array of text blocks - extract and measure total size
+            let totalText = extractTextFromContentBlocks(contentArray)
+            let size = totalText.utf8.count
+            return "✓ Result (\(formatContentSize(size)))"
         } else {
             return "✓ Result"
         }
+    }
+
+    /// Extract text from an array of content blocks
+    /// - Parameter blocks: Array of content block dictionaries
+    /// - Returns: Combined text from all text blocks
+    private func extractTextFromContentBlocks(_ blocks: [[String: Any]]) -> String {
+        var texts: [String] = []
+        for block in blocks {
+            if let blockType = block["type"] as? String, blockType == "text",
+               let text = block["text"] as? String {
+                texts.append(text)
+            }
+        }
+        return texts.joined(separator: "\n")
     }
 
     /// Summarize a thinking content block

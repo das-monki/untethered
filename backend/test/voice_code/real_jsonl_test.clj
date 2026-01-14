@@ -12,7 +12,7 @@
 (deftest parse-real-jsonl-file-test
   (testing "Can parse actual Claude Code .jsonl file"
     (let [messages (repl/parse-jsonl-file sample-jsonl-path)]
-      (is (= 2 (count messages)) "Should have 2 messages from fixture")
+      (is (= 5 (count messages)) "Should have 5 messages from fixture")
 
       ;; Verify structure matches what iOS expects to extract
       (doseq [msg messages]
@@ -68,7 +68,7 @@
           parsed (json/parse-string json-str true)]
 
       (is (= "session_updated" (:type parsed)) "Type should be snake_case")
-      (is (= 2 (count (:messages parsed))) "Should have 2 messages")
+      (is (= 5 (count (:messages parsed))) "Should have 5 messages")
 
       ;; Verify iOS can extract required fields from each message
       (doseq [msg (:messages parsed)]
@@ -216,3 +216,52 @@
 
       (is (= 4 (count messages)) "Should have 4 real messages")
       (is (= ["r1" "r2" "r3" "r4"] (map :uuid messages)) "Should only have real messages in order"))))
+
+(deftest tool-result-array-content-test
+  (testing "User messages with tool_result array content are parsed correctly"
+    (let [messages (repl/parse-jsonl-file sample-jsonl-path)
+          ;; Find the user message with tool_result array content (4th message, index 3)
+          tool-result-msg (nth messages 3)]
+
+      (is (= "user" (:type tool-result-msg)) "Should be a user message")
+
+      ;; Verify message.content is an array (not string)
+      (let [content (get-in tool-result-msg [:message :content])]
+        (is (vector? content) "User tool_result message content should be an array")
+        (is (= 1 (count content)) "Should have one tool_result block")
+
+        ;; Verify tool_result block structure
+        (let [tool-result (first content)]
+          (is (= "tool_result" (:type tool-result)) "Block should be tool_result type")
+          (is (contains? tool-result :tool_use_id) "Should have tool_use_id")
+
+          ;; Verify nested content is also an array of text blocks
+          (let [inner-content (:content tool-result)]
+            (is (vector? inner-content) "tool_result content should be an array")
+            (is (= "text" (:type (first inner-content))) "Inner content should be text block")
+            (is (= "File contents here from tool result" (:text (first inner-content)))
+                "Should have correct text content"))))))
+
+  (testing "toolUseResult field with array content is present"
+    (let [messages (repl/parse-jsonl-file sample-jsonl-path)
+          tool-result-msg (nth messages 3)]
+
+      ;; Verify top-level toolUseResult field
+      (is (contains? tool-result-msg :toolUseResult) "Should have toolUseResult field")
+      (is (vector? (:toolUseResult tool-result-msg)) "toolUseResult should be an array")
+
+      (let [tool-use-result (:toolUseResult tool-result-msg)]
+        (is (= "text" (:type (first tool-use-result))) "toolUseResult should contain text block")
+        (is (= "File contents here from tool result" (:text (first tool-use-result)))
+            "toolUseResult should have correct text"))))
+
+  (testing "User message with string tool_result error content"
+    (let [messages (repl/parse-jsonl-file sample-jsonl-path)
+          error-msg (nth messages 4)]
+
+      (is (= "user" (:type error-msg)) "Should be a user message")
+
+      ;; Verify toolUseResult is a string for error messages
+      (is (string? (:toolUseResult error-msg)) "Error toolUseResult should be a string")
+      (is (= "Error: File not found" (:toolUseResult error-msg))
+          "Should have correct error message"))))
