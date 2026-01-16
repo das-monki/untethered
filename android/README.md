@@ -118,7 +118,7 @@ UUIDs are always lowercase.
 - [x] Debug logs viewer (App, System, WebSocket)
 
 ### Planned
-- [ ] Priority queue support UI
+- [x] Priority queue support UI
 - [ ] Instrumented tests
 
 ## Development
